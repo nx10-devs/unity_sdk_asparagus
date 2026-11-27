@@ -1,6 +1,6 @@
 {
   "name": "com.nx10.asparagus",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "displayName": "Asparagus SDK",
   "description": "High-frequency native motion, event-stream touch, game event, span, and state telemetry SDK for the Asparagus data stack (asparagus-contract-v7, Schema v3).",
   "unity": "2021.3",
@@ -22,7 +22,7 @@
   "samples": [
     {
       "displayName": "Stage Test & Diagnostics Harness",
-      "description": "Inspector-configured runtime UI panel for Control Plane session testing (enter API key in Unity Inspector), core events, simulated desktop sensor bursts, and offline .binpb.gz export.",
+      "description": "AsparagusConfig-backed runtime UI panel for Staging/Production Control Plane testing, core events, simulated desktop sensor bursts, and offline .binpb.gz export.",
       "path": "Samples~/StageTestHarness"
     }
   ]

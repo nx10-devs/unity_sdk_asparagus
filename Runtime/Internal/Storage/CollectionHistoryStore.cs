@@ -5,48 +5,69 @@ using Asparagus.Sdk.Contracts;
 namespace Asparagus.Sdk.Internal.Storage
 {
     /// <summary>
-    /// Fault-contained atomic persistence for on-device <see cref="CollectionHistory"/>
-    /// (<c>asparagus_history.dat</c> inside the SDK storage root).
-    /// All <see cref="LoadFromDisk"/> and <see cref="SaveToDisk"/> calls MUST execute strictly
-    /// off Unity's main thread on <c>AsparagusWorker</c>.
+    /// Fault-contained atomic persistence for environment-scoped on-device <see cref="CollectionHistory"/>
+    /// (<c>asparagus_history.dat</c> for Production and <c>asparagus_history_stage.dat</c> for Staging).
+    /// All <see cref="LoadFromDisk(AsparagusEnvironment)"/> and <see cref="SaveToDisk(AsparagusEnvironment, CollectionHistory)"/>
+    /// calls MUST execute strictly off Unity's main thread on <c>AsparagusWorker</c>.
     /// </summary>
     public sealed class CollectionHistoryStore
     {
         public const string FileName = "asparagus_history.dat";
+        public const string StagingFileName = "asparagus_history_stage.dat";
         private const string TempFileName = "asparagus_history.dat.tmp";
+        private const string StagingTempFileName = "asparagus_history_stage.dat.tmp";
 
         private static readonly byte[] MagicBytes = { (byte)'A', (byte)'C', (byte)'H', (byte)'1' };
         private const byte FormatVersion = 1;
         private const int ExpectedFileBytes = 21; // 4 magic + 1 ver + 4 uint32 + 8 uint64 + 4 uint32
 
         private readonly string _baseDirectory;
-        private readonly string _filePath;
-        private readonly string _tempPath;
+        private readonly string _productionFilePath;
+        private readonly string _productionTempPath;
+        private readonly string _stagingFilePath;
+        private readonly string _stagingTempPath;
 
         public CollectionHistoryStore(string baseDirectory)
         {
             _baseDirectory = string.IsNullOrEmpty(baseDirectory) ? Path.GetTempPath() : baseDirectory;
-            _filePath = Path.Combine(_baseDirectory, FileName);
-            _tempPath = Path.Combine(_baseDirectory, TempFileName);
+            _productionFilePath = Path.Combine(_baseDirectory, FileName);
+            _productionTempPath = Path.Combine(_baseDirectory, TempFileName);
+            _stagingFilePath = Path.Combine(_baseDirectory, StagingFileName);
+            _stagingTempPath = Path.Combine(_baseDirectory, StagingTempFileName);
         }
 
         public string FilePath
         {
-            get { return _filePath; }
+            get { return _productionFilePath; }
+        }
+
+        public string GetFilePath(AsparagusEnvironment environment)
+        {
+            return environment == AsparagusEnvironment.Staging
+                ? _stagingFilePath
+                : _productionFilePath;
         }
 
         public CollectionHistory LoadFromDisk()
         {
+            return LoadFromDisk(AsparagusEnvironment.Production);
+        }
+
+        public CollectionHistory LoadFromDisk(AsparagusEnvironment environment)
+        {
+            string filePath = environment == AsparagusEnvironment.Staging ? _stagingFilePath : _productionFilePath;
+            string tempPath = environment == AsparagusEnvironment.Staging ? _stagingTempPath : _productionTempPath;
+
             try
             {
-                SafeDeleteFile(_tempPath);
+                SafeDeleteFile(tempPath);
 
-                if (!File.Exists(_filePath))
+                if (!File.Exists(filePath))
                 {
                     return default;
                 }
 
-                using (FileStream fs = new FileStream(_filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (FileStream fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
                 {
                     if (fs.Length != ExpectedFileBytes)
                     {
@@ -89,6 +110,14 @@ namespace Asparagus.Sdk.Internal.Storage
 
         public bool SaveToDisk(CollectionHistory snapshot)
         {
+            return SaveToDisk(AsparagusEnvironment.Production, snapshot);
+        }
+
+        public bool SaveToDisk(AsparagusEnvironment environment, CollectionHistory snapshot)
+        {
+            string filePath = environment == AsparagusEnvironment.Staging ? _stagingFilePath : _productionFilePath;
+            string tempPath = environment == AsparagusEnvironment.Staging ? _stagingTempPath : _productionTempPath;
+
             try
             {
                 if (!Directory.Exists(_baseDirectory))
@@ -96,7 +125,7 @@ namespace Asparagus.Sdk.Internal.Storage
                     Directory.CreateDirectory(_baseDirectory);
                 }
 
-                using (FileStream fs = new FileStream(_tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 64))
+                using (FileStream fs = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None, 64))
                 using (BinaryWriter bw = new BinaryWriter(fs, System.Text.Encoding.UTF8, false))
                 {
                     bw.Write(MagicBytes);
@@ -107,17 +136,17 @@ namespace Asparagus.Sdk.Internal.Storage
                     bw.Flush();
                 }
 
-                if (File.Exists(_filePath))
+                if (File.Exists(filePath))
                 {
-                    SafeDeleteFile(_filePath);
+                    SafeDeleteFile(filePath);
                 }
 
-                File.Move(_tempPath, _filePath);
+                File.Move(tempPath, filePath);
                 return true;
             }
             catch
             {
-                SafeDeleteFile(_tempPath);
+                SafeDeleteFile(tempPath);
                 return false;
             }
         }

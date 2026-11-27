@@ -14,7 +14,7 @@ namespace Asparagus.Sdk
     /// </summary>
     public static class AsparagusSDK
     {
-        public static readonly SdkVersion SdkVersion = new SdkVersion(1, 1, 0);
+        public static readonly SdkVersion SdkVersion = new SdkVersion(1, 2, 0);
 
         private sealed class StaticEventSink : IEventSink
         {
@@ -32,6 +32,7 @@ namespace Asparagus.Sdk
         private static readonly object Sync = new object();
         private static readonly CoreEventSender StaticCoreEventSender = new CoreEventSender(new StaticEventSink());
 
+        private static AsparagusConfiguration _configuredOverride;
         private static AsparagusRuntime _runtime;
 #if UNITY_5_3_OR_NEWER
         private static AsparagusBehaviour _behaviour;
@@ -40,6 +41,99 @@ namespace Asparagus.Sdk
         public static CoreEventSender SendCoreEvent
         {
             get { return StaticCoreEventSender; }
+        }
+
+        public static void Configure(AsparagusConfiguration config)
+        {
+            try
+            {
+                AsparagusRuntime rt;
+                AsparagusConfiguration effective;
+                lock (Sync)
+                {
+                    _configuredOverride = config != null ? config.Clone() : null;
+                    rt = _runtime != null && !_runtime.IsShutdown ? _runtime : null;
+                    effective = ResolveActiveConfigurationLocked();
+                }
+
+                if (rt != null)
+                {
+                    rt.Configure(effective);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public static AsparagusConfiguration GetActiveConfiguration()
+        {
+            try
+            {
+                lock (Sync)
+                {
+                    return ResolveActiveConfigurationLocked();
+                }
+            }
+            catch
+            {
+                return new AsparagusConfiguration();
+            }
+        }
+
+        public static bool StartSession()
+        {
+            return StartSessionFromConfig();
+        }
+
+        public static bool StartSession(
+            bool demo,
+            IReadOnlyDictionary<string, Value> sessionProperties = null,
+            string appVersion = null,
+            string buildNumber = null)
+        {
+            return StartSessionFromConfig(sessionProperties, appVersion, buildNumber, demo);
+        }
+
+        public static bool StartSessionFromConfig(
+            IReadOnlyDictionary<string, Value> sessionProperties = null,
+            string appVersion = null,
+            string buildNumber = null,
+            bool? demo = null)
+        {
+            try
+            {
+                AsparagusConfiguration activeConfig = GetActiveConfiguration();
+                AsparagusRuntime rt = EnsureRuntime();
+                if (rt == null)
+                {
+                    return false;
+                }
+
+                rt.Configure(activeConfig);
+                return rt.StartSessionFromConfig(sessionProperties, appVersion, buildNumber, demo);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static bool StartSession(
+            AsparagusEnvironment environment,
+            string apiKey,
+            IReadOnlyDictionary<string, Value> sessionProperties = null,
+            string appVersion = null,
+            string buildNumber = null,
+            bool demo = false)
+        {
+            return StartSession(
+                AsparagusEndpoints.GetControlPlaneBaseUrl(environment),
+                apiKey,
+                sessionProperties,
+                appVersion,
+                buildNumber,
+                demo);
         }
 
         public static bool StartSession(
@@ -459,6 +553,7 @@ namespace Asparagus.Sdk
                 {
                     rtToShutdown = _runtime;
                     _runtime = null;
+                    _configuredOverride = null;
 #if UNITY_5_3_OR_NEWER
                     hostToDestroy = _behaviour;
                     _behaviour = null;
@@ -497,6 +592,24 @@ namespace Asparagus.Sdk
             }
         }
 
+        private static AsparagusConfiguration ResolveActiveConfigurationLocked()
+        {
+            if (_configuredOverride != null)
+            {
+                return _configuredOverride.Clone();
+            }
+
+#if UNITY_5_3_OR_NEWER
+            AsparagusConfig asset = AsparagusConfig.LoadFromResources();
+            if (asset != null)
+            {
+                return asset.ToConfiguration();
+            }
+#endif
+
+            return new AsparagusConfiguration();
+        }
+
         private static AsparagusRuntime EnsureRuntime()
         {
             lock (Sync)
@@ -505,7 +618,8 @@ namespace Asparagus.Sdk
                 {
                     _runtime = new AsparagusRuntime(new AsparagusRuntimeOptions
                     {
-                        SdkVersion = SdkVersion
+                        SdkVersion = SdkVersion,
+                        Configuration = ResolveActiveConfigurationLocked()
                     });
                 }
 

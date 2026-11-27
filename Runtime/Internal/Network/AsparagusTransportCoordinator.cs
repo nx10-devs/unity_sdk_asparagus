@@ -26,8 +26,7 @@ namespace Asparagus.Sdk.Internal.Network
     /// </summary>
     public sealed class AsparagusTransportCoordinator
     {
-        public const string DefaultControlPlaneBaseUrl = "https://control-plane.affectstack-stage.com";
-        private const string SessionStartPath = "/routes/asparagus/sessions/start";
+        public const string DefaultControlPlaneBaseUrl = AsparagusEndpoints.StagingControlPlaneBaseUrl;
         private const string ContentTypeJson = "application/json";
         private const string ContentTypeProtobuf = "application/x-protobuf";
 
@@ -115,6 +114,11 @@ namespace Asparagus.Sdk.Internal.Network
                     ? _activeResponse.Settings
                     : SessionSettings.CreateDefaults();
             }
+        }
+
+        public string ControlPlaneBaseUrl
+        {
+            get { return _controlPlaneBaseUrl; }
         }
 
         public string BatchEndpoint
@@ -423,7 +427,7 @@ namespace Asparagus.Sdk.Internal.Network
             }
 
             byte[] body = System.Text.Encoding.UTF8.GetBytes(json);
-            string url = _controlPlaneBaseUrl + SessionStartPath;
+            string url = _controlPlaneBaseUrl + AsparagusEndpoints.SessionStartPath;
             HttpRequestSpec spec = new HttpRequestSpec(url, null, ContentTypeJson, null, body, body.Length);
 
             uint requestGeneration = _sessionGeneration;

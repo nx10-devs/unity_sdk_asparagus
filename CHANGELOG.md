@@ -2,6 +2,19 @@
 
 All notable changes to the Asparagus Unity SDK (`com.nx10.asparagus`) are documented in this file.
 
+## [1.2.0] - 2026-11-27
+
+### Added
+- Central `AsparagusConfig` Unity `ScriptableObject` (`Assets/Resources/AsparagusConfig.asset`), pure-C# `AsparagusConfiguration`, `AsparagusEnvironment` (`Staging` / `Production`), `AsparagusEnvironmentMode` (`Automatic` / `Staging` / `Production`), and `AsparagusEndpoints` (`https://control-plane.affectstack-stage.com` vs `https://control-plane.affectstack.com` -> `/routes/asparagus/sessions/start`).
+- Unity Editor menu (`Asparagus.Sdk.Editor` assembly): **Tools -> Asparagus SDK -> Edit Configuration** creates (if missing) and selects `Assets/Resources/AsparagusConfig.asset`.
+- Zero-argument `AsparagusSDK.StartSession()`, `AsparagusSDK.StartSession(bool demo, ...)`, `AsparagusSDK.StartSessionFromConfig(...)`, `AsparagusSDK.StartSession(AsparagusEnvironment, string apiKey, ...)`, `AsparagusSDK.Configure(AsparagusConfiguration)`, and `AsparagusSDK.GetActiveConfiguration()` with zero `CS0121` overload ambiguity.
+- Environment-scoped off-main-thread `CollectionHistory` persistence: `asparagus_history_stage.dat` for Staging and `asparagus_history.dat` for Production so Staging testing never leaks into Production history.
+- `AsparagusStatusSnapshot.ActiveEnvironment` and `AsparagusStatusSnapshot.ControlPlaneBaseUrl`.
+
+### Changed
+- Updated `Samples~/StageTestHarness/AsparagusStageTestPanel.cs` to load `Resources/AsparagusConfig` (or an optional Inspector override), allow non-destructive runtime `Automatic` / `Staging` / `Production` preview switching, exercise `CoreSpans.Banner`, and display resolved environment, Control Plane URL, and masked Staging/Production key status.
+- Bumped `SdkVersion` to `1.2.0`.
+
 ## [1.1.0] - 2026-11-27
 
 ### Added

@@ -15,7 +15,7 @@ namespace Asparagus.Sdk.Internal.Runtime
 {
     public sealed class AsparagusRuntimeOptions
     {
-        public SdkVersion SdkVersion = new SdkVersion(1, 1, 0);
+        public SdkVersion SdkVersion = new SdkVersion(1, 2, 0);
         public string StorageBaseDirectory;
         public IClockSource ClockSource;
         public IHttpTransport HttpTransport;
@@ -25,6 +25,8 @@ namespace Asparagus.Sdk.Internal.Runtime
         public ISystemStateProvider SystemStateProvider;
         public IDeviceMetadataProvider DeviceMetadataProvider;
         public RetryBackoffPolicy RetryPolicy;
+        public AsparagusConfiguration Configuration;
+        public bool? IsEditorOrDevelopmentBuildOverride;
         public bool RunWorkerSynchronouslyForTests;
         public bool AutoLoadDiskQueueOnStart = true;
     }
@@ -101,6 +103,18 @@ namespace Asparagus.Sdk.Internal.Runtime
         private readonly Dictionary<string, Value> _fireEventScratch = new Dictionary<string, Value>(8, StringComparer.Ordinal);
         private readonly Dictionary<string, Value> _lastSessionProperties = new Dictionary<string, Value>(8, StringComparer.Ordinal);
 
+        private struct EnvironmentHistoryBaseline
+        {
+            public bool InitializedFromWorker;
+            public uint SessionsBefore;
+            public ulong CollectedSecondsBefore;
+            public uint LongestSessionSecondsBefore;
+        }
+
+        private readonly object _configLock = new object();
+        private AsparagusConfiguration _configuration;
+        private readonly bool? _isEditorOrDevelopmentBuildOverride;
+
         private DeviceMetadataSnapshot _lastDeviceMetadata;
         private string _lastControlPlaneBaseUrl = string.Empty;
         private string _lastApiKey = string.Empty;
@@ -108,11 +122,11 @@ namespace Asparagus.Sdk.Internal.Runtime
         private string _lastBuildNumber;
         private bool _lastDemo;
 
-        // CollectionHistory accounting (asparagus-contract-v7, Decisions 160-161)
-        private bool _historyInitializedFromWorker;
-        private uint _baseSessionsBefore;
-        private ulong _baseCollectedSecondsBefore;
-        private uint _baseLongestSessionSecondsBefore;
+        // Environment-scoped CollectionHistory accounting (asparagus-contract-v7, Decisions 160-161)
+        private EnvironmentHistoryBaseline _stagingHistory;
+        private EnvironmentHistoryBaseline _productionHistory;
+        private AsparagusEnvironment _pendingControlPlaneEnvironment = AsparagusEnvironment.Staging;
+        private AsparagusEnvironment _activeControlPlaneEnvironment = AsparagusEnvironment.Staging;
         private bool _hasActiveControlPlaneSession;
         private long _currentSessionCollectedUs;
         private CollectionHistory _activeSessionSentHistory;
@@ -131,6 +145,8 @@ namespace Asparagus.Sdk.Internal.Runtime
         {
             AsparagusRuntimeOptions opt = options ?? new AsparagusRuntimeOptions();
             _sdkVersion = opt.SdkVersion;
+            _configuration = opt.Configuration != null ? opt.Configuration.Clone() : new AsparagusConfiguration();
+            _isEditorOrDevelopmentBuildOverride = opt.IsEditorOrDevelopmentBuildOverride;
 
             _clockSource = opt.ClockSource ?? new SystemClockSource();
             _sessionClock = new SessionClock(_clockSource);
@@ -256,6 +272,120 @@ namespace Asparagus.Sdk.Internal.Runtime
             get { return _worker; }
         }
 
+        public void Configure(AsparagusConfiguration config)
+        {
+            try
+            {
+                lock (_configLock)
+                {
+                    _configuration = config != null ? config.Clone() : new AsparagusConfiguration();
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        public AsparagusConfiguration GetEffectiveConfiguration()
+        {
+            try
+            {
+                lock (_configLock)
+                {
+                    return _configuration != null ? _configuration.Clone() : new AsparagusConfiguration();
+                }
+            }
+            catch
+            {
+                return new AsparagusConfiguration();
+            }
+        }
+
+        public bool IsEditorOrDevelopmentBuild()
+        {
+            if (_isEditorOrDevelopmentBuildOverride.HasValue)
+            {
+                return _isEditorOrDevelopmentBuildOverride.Value;
+            }
+
+            return DetectEditorOrDevelopmentBuild();
+        }
+
+        internal static bool DetectEditorOrDevelopmentBuild()
+        {
+#if UNITY_5_3_OR_NEWER
+            try
+            {
+                return UnityEngine.Application.isEditor || UnityEngine.Debug.isDebugBuild;
+            }
+            catch
+            {
+                return false;
+            }
+#else
+            return false;
+#endif
+        }
+
+        public bool StartSession()
+        {
+            return StartSessionFromConfig();
+        }
+
+        public bool StartSession(
+            bool demo,
+            IReadOnlyDictionary<string, Value> sessionProperties = null,
+            string appVersion = null,
+            string buildNumber = null)
+        {
+            return StartSessionFromConfig(sessionProperties, appVersion, buildNumber, demo);
+        }
+
+        public bool StartSessionFromConfig(
+            IReadOnlyDictionary<string, Value> sessionProperties = null,
+            string appVersion = null,
+            string buildNumber = null,
+            bool? demo = null)
+        {
+            try
+            {
+                if (_isShutdown)
+                {
+                    return false;
+                }
+
+                AsparagusConfiguration config = GetEffectiveConfiguration();
+                bool isEditorOrDev = IsEditorOrDevelopmentBuild();
+                AsparagusEnvironment env = config.ResolveEnvironment(isEditorOrDev);
+                string baseUrl = AsparagusEndpoints.GetControlPlaneBaseUrl(env);
+                string apiKey = config.ResolveApiKey(isEditorOrDev);
+                bool effectiveDemo = demo.HasValue ? demo.Value : config.DemoMode;
+
+                return StartSession(baseUrl, apiKey, sessionProperties, appVersion, buildNumber, effectiveDemo);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public bool StartSession(
+            AsparagusEnvironment environment,
+            string apiKey,
+            IReadOnlyDictionary<string, Value> sessionProperties = null,
+            string appVersion = null,
+            string buildNumber = null,
+            bool demo = false)
+        {
+            return StartSession(
+                AsparagusEndpoints.GetControlPlaneBaseUrl(environment),
+                apiKey,
+                sessionProperties,
+                appVersion,
+                buildNumber,
+                demo);
+        }
+
         public bool StartSession(
             string apiKey,
             IReadOnlyDictionary<string, Value> sessionProperties = null,
@@ -282,13 +412,17 @@ namespace Asparagus.Sdk.Internal.Runtime
         {
             try
             {
-                if (_isShutdown || string.IsNullOrEmpty(controlPlaneBaseUrl) || string.IsNullOrEmpty(apiKey))
+                if (_isShutdown || string.IsNullOrWhiteSpace(controlPlaneBaseUrl) || string.IsNullOrWhiteSpace(apiKey))
                 {
                     return false;
                 }
 
-                _lastControlPlaneBaseUrl = controlPlaneBaseUrl;
-                _lastApiKey = apiKey;
+                string trimmedUrl = controlPlaneBaseUrl.Trim();
+                string trimmedKey = apiKey.Trim();
+
+                _pendingControlPlaneEnvironment = AsparagusEndpoints.ClassifyEnvironment(trimmedUrl);
+                _lastControlPlaneBaseUrl = trimmedUrl;
+                _lastApiKey = trimmedKey;
                 _lastAppVersion = appVersion;
                 _lastBuildNumber = buildNumber;
                 _lastDemo = demo;
@@ -310,7 +444,7 @@ namespace Asparagus.Sdk.Internal.Runtime
 
                 SessionStartRequest req = new SessionStartRequest
                 {
-                    ApiKey = apiKey,
+                    ApiKey = trimmedKey,
                     DeviceIdentifier = meta.DeviceIdentifier,
                     Platform = meta.Platform,
                     Device = meta.DeviceProperties,
@@ -325,7 +459,7 @@ namespace Asparagus.Sdk.Internal.Runtime
                     req.SessionProperties[kv.Key] = kv.Value;
                 }
 
-                return _transport.StartSessionViaControlPlane(controlPlaneBaseUrl, req);
+                return _transport.StartSessionViaControlPlane(trimmedUrl, req);
             }
             catch
             {
@@ -1138,9 +1272,32 @@ namespace Asparagus.Sdk.Internal.Runtime
             {
                 SessionStartResponse resp = _transport.ActiveSessionResponse;
                 SessionSettings settings = _transport.ActiveSettings;
-                CollectionHistory displayHistory = _hasActiveControlPlaneSession
-                    ? _activeSessionSentHistory
-                    : GetHistoryForNextSessionStart();
+
+                AsparagusEnvironment activeEnv;
+                string controlPlaneUrl;
+                CollectionHistory displayHistory;
+
+                if (_hasActiveControlPlaneSession)
+                {
+                    activeEnv = _activeControlPlaneEnvironment;
+                    controlPlaneUrl = _transport.ControlPlaneBaseUrl;
+                    displayHistory = _activeSessionSentHistory;
+                }
+                else if (!string.IsNullOrEmpty(_transport.ControlPlaneBaseUrl))
+                {
+                    activeEnv = AsparagusEndpoints.ClassifyEnvironment(_transport.ControlPlaneBaseUrl);
+                    controlPlaneUrl = _transport.ControlPlaneBaseUrl;
+                    displayHistory = GetHistoryForEnvironmentNextStart(activeEnv);
+                }
+                else
+                {
+                    AsparagusConfiguration cfg = GetEffectiveConfiguration();
+                    activeEnv = cfg.ResolveEnvironment(IsEditorOrDevelopmentBuild());
+                    controlPlaneUrl = _transport.IsStageOverrideMode
+                        ? string.Empty
+                        : AsparagusEndpoints.GetControlPlaneBaseUrl(activeEnv);
+                    displayHistory = GetHistoryForEnvironmentNextStart(activeEnv);
+                }
 
                 return new AsparagusStatusSnapshot(
                     isInitialized: !_isShutdown,
@@ -1172,7 +1329,9 @@ namespace Asparagus.Sdk.Internal.Runtime
                     settingsLabel: resp != null ? resp.SettingsLabel : string.Empty,
                     historySessionsBefore: displayHistory.SessionsBefore,
                     historyCollectedSecondsBefore: displayHistory.CollectedSecondsBefore,
-                    historyLongestSessionSecondsBefore: displayHistory.LongestSessionSecondsBefore);
+                    historyLongestSessionSecondsBefore: displayHistory.LongestSessionSecondsBefore,
+                    activeEnvironment: activeEnv,
+                    controlPlaneBaseUrl: controlPlaneUrl);
             }
             catch
             {
@@ -1200,7 +1359,7 @@ namespace Asparagus.Sdk.Internal.Runtime
                 }
 
                 _hasTelemetryStopSessionUs = false;
-                FoldCompletedControlPlaneSession(persistToDisk: false);
+                FoldCompletedControlPlaneSession(persistToDisk: true);
             }
             catch
             {
@@ -1216,18 +1375,27 @@ namespace Asparagus.Sdk.Internal.Runtime
                     return;
                 }
 
-                // Count every Control Plane session start (even non-collecting / demo) per session.proto lines 70-82.
+                // Count every Control Plane session start (even non-collecting / demo) per session.proto lines 70-82,
+                // strictly scoped to the session's target environment (Staging vs Production).
                 if (!_transport.IsStageOverrideMode)
                 {
-                    EnsureHistoryBaselineLoaded();
-                    FoldCompletedControlPlaneSession(persistToDisk: false);
+                    AsparagusEnvironment sessionEnv = !string.IsNullOrEmpty(_transport.ControlPlaneBaseUrl)
+                        ? AsparagusEndpoints.ClassifyEnvironment(_transport.ControlPlaneBaseUrl)
+                        : _pendingControlPlaneEnvironment;
+
+                    EnsureHistoryBaselineLoaded(sessionEnv);
+                    FoldCompletedControlPlaneSession(persistToDisk: true);
+                    EnvironmentHistoryBaseline baseline = GetHistoryBaseline(sessionEnv);
+                    _activeControlPlaneEnvironment = sessionEnv;
                     _activeSessionSentHistory = new CollectionHistory(
-                        _baseSessionsBefore,
-                        _baseCollectedSecondsBefore,
-                        _baseLongestSessionSecondsBefore);
+                        baseline.SessionsBefore,
+                        baseline.CollectedSecondsBefore,
+                        baseline.LongestSessionSecondsBefore);
                     _hasActiveControlPlaneSession = true;
                     _currentSessionCollectedUs = 0L;
-                    _worker.EnqueueSaveHistory(ComputeNextLaunchHistory());
+                    _worker.EnqueueSaveHistory(
+                        _activeControlPlaneEnvironment,
+                        ComputeNextLaunchHistory(_activeControlPlaneEnvironment));
                 }
 
                 if (!_transport.IsCollectingEnabled)
@@ -1293,7 +1461,9 @@ namespace Asparagus.Sdk.Internal.Runtime
                     if (deltaUs > 0L)
                     {
                         _currentSessionCollectedUs += deltaUs;
-                        _worker.EnqueueSaveHistory(ComputeNextLaunchHistory());
+                        _worker.EnqueueSaveHistory(
+                            _activeControlPlaneEnvironment,
+                            ComputeNextLaunchHistory(_activeControlPlaneEnvironment));
                     }
                 }
 
@@ -1362,45 +1532,71 @@ namespace Asparagus.Sdk.Internal.Runtime
             _hasTelemetryStopSessionUs = false;
         }
 
-        private void EnsureHistoryBaselineLoaded()
+        private EnvironmentHistoryBaseline GetHistoryBaseline(AsparagusEnvironment environment)
         {
-            if (!_historyInitializedFromWorker && _worker.IsStartupLoadComplete)
+            return environment == AsparagusEnvironment.Staging ? _stagingHistory : _productionHistory;
+        }
+
+        private void SetHistoryBaseline(AsparagusEnvironment environment, EnvironmentHistoryBaseline baseline)
+        {
+            if (environment == AsparagusEnvironment.Staging)
             {
-                CollectionHistory loaded = _worker.LoadedHistory;
-                _baseSessionsBefore = loaded.SessionsBefore;
-                _baseCollectedSecondsBefore = loaded.CollectedSecondsBefore;
-                _baseLongestSessionSecondsBefore = loaded.LongestSessionSecondsBefore;
-                _historyInitializedFromWorker = true;
+                _stagingHistory = baseline;
+            }
+            else
+            {
+                _productionHistory = baseline;
+            }
+        }
+
+        private void EnsureHistoryBaselineLoaded(AsparagusEnvironment environment)
+        {
+            EnvironmentHistoryBaseline baseline = GetHistoryBaseline(environment);
+            if (!baseline.InitializedFromWorker && _worker.IsStartupLoadComplete)
+            {
+                CollectionHistory loaded = _worker.GetLoadedHistory(environment);
+                baseline.SessionsBefore = loaded.SessionsBefore;
+                baseline.CollectedSecondsBefore = loaded.CollectedSecondsBefore;
+                baseline.LongestSessionSecondsBefore = loaded.LongestSessionSecondsBefore;
+                baseline.InitializedFromWorker = true;
+                SetHistoryBaseline(environment, baseline);
             }
         }
 
         private CollectionHistory GetHistoryForNextSessionStart()
         {
-            EnsureHistoryBaselineLoaded();
-            if (_hasActiveControlPlaneSession)
-            {
-                return ComputeNextLaunchHistory();
-            }
-
-            return new CollectionHistory(
-                _baseSessionsBefore,
-                _baseCollectedSecondsBefore,
-                _baseLongestSessionSecondsBefore);
+            return GetHistoryForEnvironmentNextStart(_pendingControlPlaneEnvironment);
         }
 
-        private CollectionHistory ComputeNextLaunchHistory()
+        private CollectionHistory GetHistoryForEnvironmentNextStart(AsparagusEnvironment environment)
         {
-            uint nextSessions = _baseSessionsBefore < uint.MaxValue
-                ? _baseSessionsBefore + 1u
+            EnsureHistoryBaselineLoaded(environment);
+            if (_hasActiveControlPlaneSession && _activeControlPlaneEnvironment == environment)
+            {
+                return ComputeNextLaunchHistory(environment);
+            }
+
+            EnvironmentHistoryBaseline baseline = GetHistoryBaseline(environment);
+            return new CollectionHistory(
+                baseline.SessionsBefore,
+                baseline.CollectedSecondsBefore,
+                baseline.LongestSessionSecondsBefore);
+        }
+
+        private CollectionHistory ComputeNextLaunchHistory(AsparagusEnvironment environment)
+        {
+            EnvironmentHistoryBaseline baseline = GetHistoryBaseline(environment);
+            uint nextSessions = baseline.SessionsBefore < uint.MaxValue
+                ? baseline.SessionsBefore + 1u
                 : uint.MaxValue;
             ulong currentSec = _currentSessionCollectedUs > 0L
                 ? (ulong)(_currentSessionCollectedUs / 1000000L)
                 : 0UL;
-            ulong nextCollected = SaturatingAdd(_baseCollectedSecondsBefore, currentSec);
+            ulong nextCollected = SaturatingAdd(baseline.CollectedSecondsBefore, currentSec);
             uint currentClamped = ClampToUInt32(currentSec);
-            uint nextLongest = currentClamped > _baseLongestSessionSecondsBefore
+            uint nextLongest = currentClamped > baseline.LongestSessionSecondsBefore
                 ? currentClamped
-                : _baseLongestSessionSecondsBefore;
+                : baseline.LongestSessionSecondsBefore;
 
             return new CollectionHistory(nextSessions, nextCollected, nextLongest);
         }
@@ -1412,29 +1608,34 @@ namespace Asparagus.Sdk.Internal.Runtime
                 return;
             }
 
+            AsparagusEnvironment env = _activeControlPlaneEnvironment;
+            EnsureHistoryBaselineLoaded(env);
+            EnvironmentHistoryBaseline baseline = GetHistoryBaseline(env);
+
             ulong sessionSec = _currentSessionCollectedUs > 0L
                 ? (ulong)(_currentSessionCollectedUs / 1000000L)
                 : 0UL;
-            if (_baseSessionsBefore < uint.MaxValue)
+            if (baseline.SessionsBefore < uint.MaxValue)
             {
-                _baseSessionsBefore++;
+                baseline.SessionsBefore++;
             }
-            _baseCollectedSecondsBefore = SaturatingAdd(_baseCollectedSecondsBefore, sessionSec);
+            baseline.CollectedSecondsBefore = SaturatingAdd(baseline.CollectedSecondsBefore, sessionSec);
             uint clampedSec = ClampToUInt32(sessionSec);
-            if (clampedSec > _baseLongestSessionSecondsBefore)
+            if (clampedSec > baseline.LongestSessionSecondsBefore)
             {
-                _baseLongestSessionSecondsBefore = clampedSec;
+                baseline.LongestSessionSecondsBefore = clampedSec;
             }
 
+            SetHistoryBaseline(env, baseline);
             _hasActiveControlPlaneSession = false;
             _currentSessionCollectedUs = 0L;
 
             if (persistToDisk)
             {
-                _worker.EnqueueSaveHistory(new CollectionHistory(
-                    _baseSessionsBefore,
-                    _baseCollectedSecondsBefore,
-                    _baseLongestSessionSecondsBefore));
+                _worker.EnqueueSaveHistory(env, new CollectionHistory(
+                    baseline.SessionsBefore,
+                    baseline.CollectedSecondsBefore,
+                    baseline.LongestSessionSecondsBefore));
             }
         }
 

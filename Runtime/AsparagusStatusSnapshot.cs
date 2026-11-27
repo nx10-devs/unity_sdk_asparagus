@@ -42,6 +42,9 @@ namespace Asparagus.Sdk
         public readonly ulong HistoryCollectedSecondsBefore;
         public readonly uint HistoryLongestSessionSecondsBefore;
 
+        public readonly AsparagusEnvironment ActiveEnvironment;
+        public readonly string ControlPlaneBaseUrl;
+
         public AsparagusStatusSnapshot(
             bool isInitialized,
             bool isSessionActive,
@@ -72,7 +75,9 @@ namespace Asparagus.Sdk
             string settingsLabel = null,
             uint historySessionsBefore = 0u,
             ulong historyCollectedSecondsBefore = 0UL,
-            uint historyLongestSessionSecondsBefore = 0u)
+            uint historyLongestSessionSecondsBefore = 0u,
+            AsparagusEnvironment activeEnvironment = AsparagusEnvironment.Staging,
+            string controlPlaneBaseUrl = null)
         {
             IsInitialized = isInitialized;
             IsSessionActive = isSessionActive;
@@ -108,6 +113,9 @@ namespace Asparagus.Sdk
             HistorySessionsBefore = historySessionsBefore;
             HistoryCollectedSecondsBefore = historyCollectedSecondsBefore;
             HistoryLongestSessionSecondsBefore = historyLongestSessionSecondsBefore;
+
+            ActiveEnvironment = activeEnvironment;
+            ControlPlaneBaseUrl = controlPlaneBaseUrl ?? string.Empty;
         }
     }
 }

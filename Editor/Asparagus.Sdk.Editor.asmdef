@@ -1,0 +1,18 @@
+{
+    "name": "Asparagus.Sdk.Editor",
+    "rootNamespace": "Asparagus.Sdk.Editor",
+    "references": [
+        "GUID:48c140062cb74004b910e4db1ca6d62f"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

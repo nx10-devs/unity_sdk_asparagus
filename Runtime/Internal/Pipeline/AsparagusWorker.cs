@@ -97,11 +97,14 @@ namespace Asparagus.Sdk.Internal.Pipeline
         private bool _uploadInFlight;
         private bool _canAcceptImmediateUpload;
 
-        // Off-main-thread startup load & coalesced CollectionHistory persistence
+        // Off-main-thread startup load & coalesced environment-scoped CollectionHistory persistence
         private bool _isStartupLoadComplete = true;
-        private CollectionHistory _loadedHistory;
-        private bool _hasPendingHistorySave;
-        private CollectionHistory _pendingHistoryToSave;
+        private CollectionHistory _loadedStagingHistory;
+        private CollectionHistory _loadedProductionHistory;
+        private bool _hasPendingStagingHistorySave;
+        private CollectionHistory _pendingStagingHistoryToSave;
+        private bool _hasPendingProductionHistorySave;
+        private CollectionHistory _pendingProductionHistoryToSave;
 
         private volatile bool _shutdownRequested;
         private readonly AutoResetEvent _wakeSignal;
@@ -151,12 +154,16 @@ namespace Asparagus.Sdk.Internal.Pipeline
 
         public CollectionHistory LoadedHistory
         {
-            get
+            get { return GetLoadedHistory(AsparagusEnvironment.Production); }
+        }
+
+        public CollectionHistory GetLoadedHistory(AsparagusEnvironment environment)
+        {
+            lock (_sync)
             {
-                lock (_sync)
-                {
-                    return _loadedHistory;
-                }
+                return environment == AsparagusEnvironment.Staging
+                    ? _loadedStagingHistory
+                    : _loadedProductionHistory;
             }
         }
 
@@ -233,12 +240,25 @@ namespace Asparagus.Sdk.Internal.Pipeline
 
         public void EnqueueSaveHistory(CollectionHistory historyForNextSession)
         {
+            EnqueueSaveHistory(AsparagusEnvironment.Production, historyForNextSession);
+        }
+
+        public void EnqueueSaveHistory(AsparagusEnvironment environment, CollectionHistory historyForNextSession)
+        {
             if (_shutdownRequested || _historyStore == null) return;
 
             lock (_sync)
             {
-                _pendingHistoryToSave = historyForNextSession;
-                _hasPendingHistorySave = true;
+                if (environment == AsparagusEnvironment.Staging)
+                {
+                    _pendingStagingHistoryToSave = historyForNextSession;
+                    _hasPendingStagingHistorySave = true;
+                }
+                else
+                {
+                    _pendingProductionHistoryToSave = historyForNextSession;
+                    _hasPendingProductionHistorySave = true;
+                }
             }
 
             SignalOrRun();
@@ -546,14 +566,20 @@ namespace Asparagus.Sdk.Internal.Pipeline
 
         private void ProcessAllPendingJobs()
         {
-            // 1. Startup disk loads (disk batch queue + CollectionHistoryStore off main thread)
+            // 1. Startup disk loads (disk batch queue + both Staging & Production CollectionHistory off main thread)
             while (TryDequeueStartupLoad(out StartupLoadJob loadJob))
             {
                 _diskQueue.LoadFromDisk(loadJob.NowUtcMs, loadJob.ActiveOrg, loadJob.ActiveDeployment, loadJob.ActiveSource);
-                CollectionHistory loaded = _historyStore != null ? _historyStore.LoadFromDisk() : default;
+                CollectionHistory loadedStaging = _historyStore != null
+                    ? _historyStore.LoadFromDisk(AsparagusEnvironment.Staging)
+                    : default;
+                CollectionHistory loadedProduction = _historyStore != null
+                    ? _historyStore.LoadFromDisk(AsparagusEnvironment.Production)
+                    : default;
                 lock (_sync)
                 {
-                    _loadedHistory = loaded;
+                    _loadedStagingHistory = loadedStaging;
+                    _loadedProductionHistory = loadedProduction;
                     if (_startupLoadQueue.Count == 0)
                     {
                         _isStartupLoadComplete = true;
@@ -579,12 +605,20 @@ namespace Asparagus.Sdk.Internal.Pipeline
                 ProcessEncodeJob(in job);
             }
 
-            // 5. Coalesced CollectionHistory save (at most one tiny atomic write per worker cycle)
-            if (TryClaimHistorySave(out CollectionHistory historyToSave))
+            // 5. Coalesced per-environment CollectionHistory saves (at most one tiny atomic write per env per cycle)
+            if (TryClaimHistorySave(AsparagusEnvironment.Staging, out CollectionHistory stagingHistoryToSave))
             {
                 if (_historyStore != null)
                 {
-                    _historyStore.SaveToDisk(historyToSave);
+                    _historyStore.SaveToDisk(AsparagusEnvironment.Staging, stagingHistoryToSave);
+                }
+            }
+
+            if (TryClaimHistorySave(AsparagusEnvironment.Production, out CollectionHistory productionHistoryToSave))
+            {
+                if (_historyStore != null)
+                {
+                    _historyStore.SaveToDisk(AsparagusEnvironment.Production, productionHistoryToSave);
                 }
             }
 
@@ -595,18 +629,31 @@ namespace Asparagus.Sdk.Internal.Pipeline
             }
         }
 
-        private bool TryClaimHistorySave(out CollectionHistory snapshot)
+        private bool TryClaimHistorySave(AsparagusEnvironment environment, out CollectionHistory snapshot)
         {
             lock (_sync)
             {
-                if (!_hasPendingHistorySave)
+                if (environment == AsparagusEnvironment.Staging)
+                {
+                    if (!_hasPendingStagingHistorySave)
+                    {
+                        snapshot = default;
+                        return false;
+                    }
+
+                    snapshot = _pendingStagingHistoryToSave;
+                    _hasPendingStagingHistorySave = false;
+                    return true;
+                }
+
+                if (!_hasPendingProductionHistorySave)
                 {
                     snapshot = default;
                     return false;
                 }
 
-                snapshot = _pendingHistoryToSave;
-                _hasPendingHistorySave = false;
+                snapshot = _pendingProductionHistoryToSave;
+                _hasPendingProductionHistorySave = false;
                 return true;
             }
         }

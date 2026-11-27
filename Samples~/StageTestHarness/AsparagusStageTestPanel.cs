@@ -4,35 +4,37 @@ using System.Collections.Generic;
 using Asparagus.Sdk;
 using Asparagus.Sdk.Contracts;
 using Asparagus.Sdk.Internal.Capture;
-using Asparagus.Sdk.Internal.Network;
 using UnityEngine;
 
 namespace Asparagus.Sdk.Samples
 {
     /// <summary>
-    /// Self-contained DPI-scaled IMGUI Stage Test &amp; Diagnostics Panel configured via Unity Inspector.
-    /// Drop this component onto any GameObject in a scene, paste your deployment API key into the
-    /// Inspector (or set ASPARAGUS_API_KEY in your environment), and press Play. Never commit a real API key.
+    /// Self-contained DPI-scaled IMGUI Test &amp; Diagnostics Panel backed by central
+    /// <see cref="AsparagusConfig"/> (<c>Assets/Resources/AsparagusConfig.asset</c>).
+    /// Open <b>Tools -&gt; Asparagus SDK -&gt; Edit Configuration</b> to configure Staging and Production keys,
+    /// then drop this component onto any GameObject and press Play. Never commit real API keys.
     /// </summary>
     public sealed class AsparagusStageTestPanel : MonoBehaviour
     {
         private const int MaxLogLines = 12;
 
         [Header("Asparagus Session Configuration")]
-        [Tooltip("Deployment API key from the Control Plane. Leave blank before committing to Git.")]
-        [SerializeField] private string _apiKey = string.Empty;
+        [Tooltip("Optional config asset override. When left empty, loads Assets/Resources/AsparagusConfig automatically.")]
+        [SerializeField] private AsparagusConfig _configOverride = null;
 
-        [Tooltip("Automatically call AsparagusSDK.StartSession when entering Play Mode.")]
+        [Tooltip("Automatically call AsparagusSDK.StartSessionFromConfig when entering Play Mode.")]
         [SerializeField] private bool _autoStartSessionOnStart = false;
-
-        [Tooltip("Send demo=true on session start (verifies key without collecting or uploading batches).")]
-        [SerializeField] private bool _demoMode = false;
 
         [SerializeField] private string _appVersionOverride = string.Empty;
         [SerializeField] private string _buildNumberOverride = string.Empty;
 
+        private AsparagusConfiguration _runtimeConfig = new AsparagusConfiguration();
+        private string _configSourceLabel = string.Empty;
+        private bool _demoModeOverride;
+
         private bool _touchPaused;
         private bool _popupSpanOpen;
+        private bool _bannerSpanOpen;
         private int _levelCounter = 1;
         private long _simTimestampUs = 1000000L;
         private string _lastExportSummary = string.Empty;
@@ -40,15 +42,31 @@ namespace Asparagus.Sdk.Samples
         private Vector2 _scrollPos;
         private readonly List<string> _logLines = new List<string>(MaxLogLines);
         private readonly Dictionary<string, Value> _popupData = new Dictionary<string, Value>(2, StringComparer.Ordinal);
+        private readonly Dictionary<string, Value> _bannerData = new Dictionary<string, Value>(2, StringComparer.Ordinal);
 
         private void Awake()
         {
-            if (string.IsNullOrEmpty(_apiKey))
+            AsparagusConfig source = _configOverride != null
+                ? _configOverride
+                : AsparagusConfig.LoadFromResources();
+
+            if (source != null)
             {
-                _apiKey = ReadEnv("ASPARAGUS_API_KEY");
+                _runtimeConfig = source.ToConfiguration();
+                _configSourceLabel = _configOverride != null
+                    ? "Inspector Override (" + source.name + ")"
+                    : "Resources/AsparagusConfig (loaded)";
+            }
+            else
+            {
+                _runtimeConfig = new AsparagusConfiguration();
+                _configSourceLabel = "Not found — open Tools -> Asparagus SDK -> Edit Configuration";
             }
 
-            AppendLog("Ready. Configure Api Key in Unity Inspector (or ASPARAGUS_API_KEY) and click Start Session.");
+            _demoModeOverride = _runtimeConfig.DemoMode;
+            AsparagusSDK.Configure(_runtimeConfig);
+
+            AppendLog("Ready (" + _configSourceLabel + "). Click Start Session.");
         }
 
         private void Start()
@@ -61,10 +79,10 @@ namespace Asparagus.Sdk.Samples
 
         private void OnGUI()
         {
+            Matrix4x4 prevMatrix = GUI.matrix;
             try
             {
                 float scale = ComputeUiScale();
-                Matrix4x4 prevMatrix = GUI.matrix;
                 GUI.matrix = Matrix4x4.TRS(Vector3.zero, Quaternion.identity, new Vector3(scale, scale, 1f));
 
                 float virtualWidth = Screen.width / scale;
@@ -74,7 +92,7 @@ namespace Asparagus.Sdk.Samples
                 GUILayout.BeginArea(new Rect(pad, pad, virtualWidth - pad * 2f, virtualHeight - pad * 2f));
                 _scrollPos = GUILayout.BeginScrollView(_scrollPos);
 
-                GUILayout.Label("Asparagus Unity SDK — Stage Test & Diagnostics Panel");
+                GUILayout.Label("Asparagus Unity SDK — Test & Diagnostics Panel");
 
                 DrawSessionControls();
                 GUILayout.Space(8f);
@@ -88,26 +106,47 @@ namespace Asparagus.Sdk.Samples
 
                 GUILayout.EndScrollView();
                 GUILayout.EndArea();
-
-                GUI.matrix = prevMatrix;
             }
             catch
             {
                 // Demo UI never throws into Unity OnGUI loop.
             }
+            finally
+            {
+                GUI.matrix = prevMatrix;
+            }
         }
 
         private void DrawSessionControls()
         {
+            bool isEditorOrDev = Application.isEditor || Debug.isDebugBuild;
+            AsparagusEnvironment resolvedEnv = _runtimeConfig.ResolveEnvironment(isEditorOrDev);
+            string resolvedEndpoint = AsparagusEndpoints.GetSessionStartUrl(resolvedEnv);
+            string stagingKey = _runtimeConfig.ResolveApiKeyForEnvironment(AsparagusEnvironment.Staging);
+            string prodKey = _runtimeConfig.ResolveApiKeyForEnvironment(AsparagusEnvironment.Production);
+
             GUILayout.BeginVertical("box");
             GUILayout.Label("1. Session & Telemetry Controls");
+            GUILayout.Label("Config Asset: " + _configSourceLabel);
 
-            string keyStatus = string.IsNullOrEmpty(_apiKey)
-                ? "<Not set — enter Api Key in Unity Inspector>"
-                : "Configured (••••, length " + _apiKey.Length + ")";
-            GUILayout.Label("Inspector API Key: " + keyStatus);
-            GUILayout.Label("Session Endpoint: " + AsparagusTransportCoordinator.DefaultControlPlaneBaseUrl + "/routes/asparagus/sessions/start");
-            _demoMode = GUILayout.Toggle(_demoMode, "Demo Mode (verify key without collecting or uploading batches)");
+            GUILayout.BeginHorizontal();
+            GUILayout.Label("Environment Mode (runtime preview):", GUILayout.Width(220f));
+            DrawEnvironmentModeButton(AsparagusEnvironmentMode.Automatic, "Automatic");
+            DrawEnvironmentModeButton(AsparagusEnvironmentMode.Staging, "Staging");
+            DrawEnvironmentModeButton(AsparagusEnvironmentMode.Production, "Production");
+            GUILayout.EndHorizontal();
+
+            GUILayout.Label("Resolved Environment: " + resolvedEnv + " (Editor/Dev=" + isEditorOrDev + ")");
+            GUILayout.Label("Resolved Endpoint: " + resolvedEndpoint);
+            GUILayout.Label("Staging API Key: " + FormatMaskedKey(stagingKey) + " | Production API Key: " + FormatMaskedKey(prodKey));
+
+            bool nextDemo = GUILayout.Toggle(_demoModeOverride, "Demo Mode (verify key without collecting or uploading batches)");
+            if (nextDemo != _demoModeOverride)
+            {
+                _demoModeOverride = nextDemo;
+                _runtimeConfig.DemoMode = _demoModeOverride;
+                AsparagusSDK.Configure(_runtimeConfig);
+            }
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Start Session"))
@@ -146,6 +185,18 @@ namespace Asparagus.Sdk.Samples
             GUILayout.EndHorizontal();
 
             GUILayout.EndVertical();
+        }
+
+        private void DrawEnvironmentModeButton(AsparagusEnvironmentMode mode, string label)
+        {
+            bool selected = _runtimeConfig.EnvironmentMode == mode;
+            string caption = selected ? "[" + label + "]" : label;
+            if (GUILayout.Button(caption))
+            {
+                _runtimeConfig.EnvironmentMode = mode;
+                AsparagusSDK.Configure(_runtimeConfig);
+                AppendLog("Runtime EnvironmentMode set to " + mode + " (asset on disk unchanged).");
+            }
         }
 
         private void DrawEventsAndStateSection()
@@ -203,6 +254,14 @@ namespace Asparagus.Sdk.Samples
                 _popupData["popup_id"] = Value.FromText("daily_bonus");
                 AsparagusSDK.SendEvent(_popupSpanOpen ? "popup_opened" : "popup_closed", _popupData, CoreSpans.Popup);
                 AppendLog("Toggled CoreSpans.Popup -> " + (_popupSpanOpen ? "OPEN" : "CLOSED") + ".");
+            }
+            if (GUILayout.Button(_bannerSpanOpen ? "Close CoreSpans.Banner" : "Open CoreSpans.Banner"))
+            {
+                _bannerSpanOpen = !_bannerSpanOpen;
+                _bannerData.Clear();
+                _bannerData["placement"] = Value.FromText("hud_bottom");
+                AsparagusSDK.SendEvent(_bannerSpanOpen ? "banner_shown" : "banner_hidden", _bannerData, CoreSpans.Banner);
+                AppendLog("Toggled CoreSpans.Banner -> " + (_bannerSpanOpen ? "OPEN" : "CLOSED") + ".");
             }
             if (GUILayout.Button("SetAttribute(game_level=3)"))
             {
@@ -277,6 +336,9 @@ namespace Asparagus.Sdk.Samples
                 + " | StoppedByGame: " + s.IsTelemetryStoppedByGame
                 + " | Paused: " + s.IsPaused);
             GUILayout.Label(
+                "Env: " + s.ActiveEnvironment
+                + " | ControlPlane: " + (string.IsNullOrEmpty(s.ControlPlaneBaseUrl) ? "<none>" : s.ControlPlaneBaseUrl));
+            GUILayout.Label(
                 "SettingsLabel: " + (string.IsNullOrEmpty(s.SettingsLabel) ? "<none>" : s.SettingsLabel)
                 + " | Refused: " + s.IsRefusedForAppRun
                 + " | SessionId: " + (string.IsNullOrEmpty(s.ActiveSessionId) ? "<none>" : s.ActiveSessionId)
@@ -317,14 +379,16 @@ namespace Asparagus.Sdk.Samples
 
         private void OnClickStartSession()
         {
-            bool ok = AsparagusSDK.StartSession(
-                _apiKey,
+            _runtimeConfig.DemoMode = _demoModeOverride;
+            AsparagusSDK.Configure(_runtimeConfig);
+
+            bool ok = AsparagusSDK.StartSessionFromConfig(
                 appVersion: NullIfEmpty(_appVersionOverride),
                 buildNumber: NullIfEmpty(_buildNumberOverride),
-                demo: _demoMode);
+                demo: _demoModeOverride);
             AppendLog(ok
-                ? "SessionStart dispatched to Control Plane."
-                : "StartSession failed (set Api Key in Unity Inspector or ASPARAGUS_API_KEY).");
+                ? "SessionStart dispatched via AsparagusConfig."
+                : "StartSession failed (configure API key via Tools -> Asparagus SDK -> Edit Configuration or env var).");
         }
 
         private void SimulateOneSecondMotionAndSwipe()
@@ -425,6 +489,13 @@ namespace Asparagus.Sdk.Samples
             _logLines.Add("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + message);
         }
 
+        private static string FormatMaskedKey(string key)
+        {
+            return string.IsNullOrEmpty(key)
+                ? "<Not set>"
+                : "Configured (••••, len " + key.Length + ")";
+        }
+
         private static string NullIfEmpty(string value)
         {
             return string.IsNullOrEmpty(value) ? null : value;
@@ -438,18 +509,6 @@ namespace Asparagus.Sdk.Samples
                 return Mathf.Clamp(dpi / 160f, 1f, 3f);
             }
             return Screen.width >= 1600 ? 1.25f : 1f;
-        }
-
-        private static string ReadEnv(string name)
-        {
-            try
-            {
-                return Environment.GetEnvironmentVariable(name) ?? string.Empty;
-            }
-            catch
-            {
-                return string.Empty;
-            }
         }
     }
 }
