@@ -988,5 +988,149 @@ namespace Asparagus.Sdk.Tests
                 StringAssert.Contains("\"history\":{\"sessions_before\":4,\"collected_seconds_before\":\"62\",\"longest_session_seconds_before\":30}", req5Json);
             }
         }
+
+        // ====================================================================
+        // 8. Stopped-Telemetry & Background-Sleep Intervals Never Inflate History or Emit Catch-Up Batches
+        // ====================================================================
+
+        [Test]
+        public void Runtime_StoppedTelemetryAndBackgroundSleep_NeverEmitCatchUpBatchesOrInflateCollectionHistory()
+        {
+            long baseUtcMs = 1794736860000L;
+            long baseUs = baseUtcMs * 1000L;
+
+            // --- Case 1: StopTelemetry() at 5s -> advance 60s -> StartTelemetry() -> 0 catch-up batches, 60s CaptureStopped gap, only active seconds counted ---
+            string dir1 = Path.Combine(_tempDir, "case1_telemetry_resume");
+            Directory.CreateDirectory(dir1);
+            FakeClock clock1 = new FakeClock { SteadyTimeUs = 0L, UnityTimeUs = 100000L, WallUtcMs = baseUtcMs };
+            MockHttpTransport http1 = new MockHttpTransport();
+            using (AsparagusRuntime rt1 = new AsparagusRuntime(new AsparagusRuntimeOptions
+            {
+                SdkVersion = new SdkVersion(1, 1, 0),
+                StorageBaseDirectory = dir1,
+                ClockSource = clock1,
+                HttpTransport = http1,
+                MotionSource = new FakeMotionSource(),
+                TouchSource = new FakeTouchSource(),
+                ScreenInfoProvider = new FakeScreenProvider(),
+                SystemStateProvider = new FakeSystemStateProvider(),
+                DeviceMetadataProvider = new FakeDeviceMetadataProvider(),
+                RetryPolicy = new RetryBackoffPolicy(() => 0.0),
+                RunWorkerSynchronouslyForTests = true
+            }))
+            {
+                http1.EnqueueJson(200L, MakeSessionStartSuccessJson("ses-stop1", "tok-stop1", baseUtcMs));
+                Assert.IsTrue(rt1.StartSession("test-key"));
+
+                // Collect 5s, then StopTelemetry()
+                clock1.SteadyTimeUs = 5000000L;
+                clock1.UnityTimeUs = 5100000L;
+                rt1.StopTelemetry();
+                http1.EnqueueResponse(200L, new byte[] { 0x08, 0x01 });
+                rt1.Tick();
+                Assert.AreEqual(2, http1.Calls.Count);
+
+                // Stay stopped for 60s (t = 5s..65s), then StartTelemetry()
+                clock1.SteadyTimeUs += 60000000L;
+                clock1.UnityTimeUs += 60000000L;
+                rt1.StartTelemetry();
+
+                // Tick right after StartTelemetry() -> MUST emit 0 catch-up batches!
+                for (int f = 0; f < 5; f++)
+                {
+                    clock1.SteadyTimeUs += 16000L;
+                    clock1.UnityTimeUs += 16000L;
+                    rt1.Tick();
+                }
+                Assert.AreEqual(0, rt1.DiskQueue.QueuedCount, "StartTelemetry after 60s stopped must emit 0 catch-up batches");
+                Assert.AreEqual(2, http1.Calls.Count);
+
+                // Collect 10 more active seconds (t = 65s..75s) -> window closes with 60s CaptureStopped gap and WindowStartUs == base + 65s!
+                http1.EnqueueResponse(200L, new byte[] { 0x08, 0x01 });
+                clock1.SteadyTimeUs = 75000000L;
+                clock1.UnityTimeUs = 75100000L;
+                rt1.Tick();
+                Assert.AreEqual(3, http1.Calls.Count);
+
+                Assert.IsTrue(BatchProtobufCodec.TryDecodeBatch(http1.Calls[2].BodyCopy, 0, http1.Calls[2].BodyCopy.Length, out Batch resumedBatch, out _));
+                Assert.AreEqual(baseUs + 65000000L, resumedBatch.Header.WindowStartUs);
+                Assert.AreEqual(10u, resumedBatch.Header.WindowLengthS);
+                Assert.AreEqual(1, resumedBatch.Gaps.Count);
+                Assert.AreEqual(GapCause.CaptureStopped, resumedBatch.Gaps[0].Cause);
+                Assert.AreEqual(60000000L, resumedBatch.Gaps[0].EndTimeUs - resumedBatch.Gaps[0].StartTimeUs);
+
+                // --- Case 2: StopTelemetry() -> advance 60s -> StopSession() excludes the 60s stopped interval ---
+                rt1.StopTelemetry(); // at t = 75s (0s elapsed since window closed at 75s)
+                clock1.SteadyTimeUs += 60000000L; // +60s stopped (t = 135s)
+                clock1.UnityTimeUs += 60000000L;
+                rt1.StopSession();
+
+                // In-process next session must report 5s + 10s = 15s (NOT 75s or 135s!)
+                http1.EnqueueJson(200L, MakeSessionStartSuccessJson("ses-stop2", "tok-stop2", baseUtcMs + 135000L));
+                Assert.IsTrue(rt1.StartSession("test-key"));
+                string nextReqJson = System.Text.Encoding.UTF8.GetString(http1.Calls[http1.Calls.Count - 1].BodyCopy);
+                StringAssert.Contains("\"history\":{\"sessions_before\":1,\"collected_seconds_before\":\"15\",\"longest_session_seconds_before\":15}", nextReqJson);
+            }
+
+            // --- Case 3: OnApplicationPause(true) at 10s -> advance 120s in background (0 buffered samples) -> Shutdown() persists 10s (NOT 130s!) ---
+            string dir3 = Path.Combine(_tempDir, "case3_background_quit");
+            Directory.CreateDirectory(dir3);
+            FakeClock clock3 = new FakeClock { SteadyTimeUs = 0L, UnityTimeUs = 100000L, WallUtcMs = baseUtcMs };
+            MockHttpTransport http3 = new MockHttpTransport();
+            using (AsparagusRuntime rt3 = new AsparagusRuntime(new AsparagusRuntimeOptions
+            {
+                SdkVersion = new SdkVersion(1, 1, 0),
+                StorageBaseDirectory = dir3,
+                ClockSource = clock3,
+                HttpTransport = http3,
+                MotionSource = new FakeMotionSource(),
+                TouchSource = new FakeTouchSource(),
+                ScreenInfoProvider = new FakeScreenProvider(),
+                SystemStateProvider = new FakeSystemStateProvider(),
+                DeviceMetadataProvider = new FakeDeviceMetadataProvider(),
+                RetryPolicy = new RetryBackoffPolicy(() => 0.0),
+                RunWorkerSynchronouslyForTests = true
+            }))
+            {
+                http3.EnqueueJson(200L, MakeSessionStartSuccessJson("ses-bg1", "tok-bg1", baseUtcMs));
+                Assert.IsTrue(rt3.StartSession("test-key"));
+
+                // Collect 10s, then background the app
+                clock3.SteadyTimeUs = 10000000L;
+                clock3.UnityTimeUs = 10100000L;
+                clock3.WallUtcMs = baseUtcMs + 10000L;
+                rt3.OnApplicationPause(true);
+
+                // Swipe app away 120s later while paused with 0 buffered samples -> Shutdown()
+                clock3.SteadyTimeUs += 120000000L;
+                clock3.UnityTimeUs += 120000000L;
+                clock3.WallUtcMs += 120000L;
+                rt3.Shutdown();
+            }
+
+            // Next launch on same dir3 must send 10s (NOT 130s!)
+            FakeClock clock4 = new FakeClock { SteadyTimeUs = 0L, UnityTimeUs = 100000L, WallUtcMs = baseUtcMs + 200000L };
+            MockHttpTransport http4 = new MockHttpTransport();
+            using (AsparagusRuntime rt4 = new AsparagusRuntime(new AsparagusRuntimeOptions
+            {
+                SdkVersion = new SdkVersion(1, 1, 0),
+                StorageBaseDirectory = dir3,
+                ClockSource = clock4,
+                HttpTransport = http4,
+                MotionSource = new FakeMotionSource(),
+                TouchSource = new FakeTouchSource(),
+                ScreenInfoProvider = new FakeScreenProvider(),
+                SystemStateProvider = new FakeSystemStateProvider(),
+                DeviceMetadataProvider = new FakeDeviceMetadataProvider(),
+                RetryPolicy = new RetryBackoffPolicy(() => 0.0),
+                RunWorkerSynchronouslyForTests = true
+            }))
+            {
+                http4.EnqueueJson(200L, MakeSessionStartSuccessJson("ses-bg2", "tok-bg2", clock4.WallUtcMs));
+                Assert.IsTrue(rt4.StartSession("test-key"));
+                string launch2Json = System.Text.Encoding.UTF8.GetString(http4.Calls[0].BodyCopy);
+                StringAssert.Contains("\"history\":{\"sessions_before\":1,\"collected_seconds_before\":\"10\",\"longest_session_seconds_before\":10}", launch2Json);
+            }
+        }
     }
 }

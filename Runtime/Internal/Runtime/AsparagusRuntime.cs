@@ -375,12 +375,14 @@ namespace Asparagus.Sdk.Internal.Runtime
 
                 if (_windowCoordinator.IsSessionActive)
                 {
-                    DrainCaptureSourcesIfRunning();
+                    long unityUs = _clockSource.UnityTimeUs;
+                    bool countInHistory = PrepareWindowBeforeTerminalClose(unityUs, allowPauseBufferedDrain: true);
                     StopCaptureSources();
 
                     if (_windowCoordinator.CloseCurrentWindow(CloseReason.SessionEnded, out Batch finalBatch))
                     {
-                        HandleBatchClosed(finalBatch);
+                        bool shouldCount = countInHistory && (!_isPaused || finalBatch.SensorBlocks.Count > 0);
+                        HandleBatchClosedInternal(finalBatch, shouldCount);
                     }
                     _windowCoordinator.EndSession();
                 }
@@ -411,16 +413,38 @@ namespace Asparagus.Sdk.Internal.Runtime
 
                 if (_windowCoordinator.IsSessionActive && _transport.IsCollectingEnabled)
                 {
+                    long unityUs = _clockSource.UnityTimeUs;
+                    bool countInHistory;
+                    if (_isPaused)
+                    {
+                        DrainCaptureSourcesIfRunning(unityUs);
+                        if (_motionAggregator.TotalMotionSampleCount == 0 && _windowCoordinator.TotalWindowGapCount == 0)
+                        {
+                            _sessionClock.SnapWindowStartToCurrentSecond();
+                            _windowCoordinator.RefreshWindowOpenSnapshots();
+                            countInHistory = false;
+                        }
+                        else
+                        {
+                            countInHistory = _motionAggregator.TotalMotionSampleCount > 0;
+                        }
+                    }
+                    else
+                    {
+                        DrainCaptureSourcesIfRunning(unityUs);
+                        countInHistory = true;
+                    }
+
+                    StopCaptureSources();
+
                     _hasTelemetryStopSessionUs = true;
                     _telemetryStopSessionUs = _sessionClock.CurrentSessionUs;
 
-                    DrainCaptureSourcesIfRunning();
-                    StopCaptureSources();
-
-                    _windowCoordinator.RecordLifecycle(new LifecycleRecord(_clockSource.UnityTimeUs, LifecycleKind.CaptureStoppedByGame));
+                    _windowCoordinator.RecordLifecycle(new LifecycleRecord(unityUs, LifecycleKind.CaptureStoppedByGame));
                     if (_windowCoordinator.CloseCurrentWindow(CloseReason.CaptureStopped, out Batch closed))
                     {
-                        HandleBatchClosed(closed);
+                        bool shouldCount = countInHistory && (!_isPaused || closed.SensorBlocks.Count > 0);
+                        HandleBatchClosedInternal(closed, shouldCount);
                     }
                 }
                 else
@@ -446,23 +470,13 @@ namespace Asparagus.Sdk.Internal.Runtime
 
                 if (_windowCoordinator.IsSessionActive && _transport.IsCollectingEnabled)
                 {
-                    long nowSessionUs = _sessionClock.CurrentSessionUs;
-                    long nowUnityUs = _clockSource.UnityTimeUs;
+                    // Snap window start & open snapshots before recording the CaptureStopped gap so
+                    // stopped-telemetry silence never emits catch-up batches or inflates CollectionHistory.
+                    _sessionClock.SnapWindowStartToCurrentSecond();
+                    _windowCoordinator.RefreshWindowOpenSnapshots();
 
-                    if (_hasTelemetryStopSessionUs)
-                    {
-                        long startUs = _telemetryStopSessionUs;
-                        long endUs = nowSessionUs >= startUs ? nowSessionUs : startUs;
-                        _windowCoordinator.RecordGap(new GapRecord
-                        {
-                            Signal = GapSignal.Everything,
-                            Clock = Clock.Session,
-                            StartTimeUs = startUs,
-                            EndTimeUs = endUs,
-                            Cause = GapCause.CaptureStopped
-                        }, _onBatchClosedAction);
-                        _hasTelemetryStopSessionUs = false;
-                    }
+                    long nowUnityUs = _clockSource.UnityTimeUs;
+                    FlushPendingTelemetryStoppedGap();
 
                     _windowCoordinator.RecordLifecycle(new LifecycleRecord(nowUnityUs, LifecycleKind.CaptureStartedByGame));
 
@@ -765,9 +779,21 @@ namespace Asparagus.Sdk.Internal.Runtime
 
                     if (_windowCoordinator.IsSessionActive)
                     {
-                        if (_transport.IsCollectingEnabled && !_telemetryStoppedByGame)
+                        bool countInHistory;
+                        if (_telemetryStoppedByGame)
                         {
-                            DrainCaptureSourcesIfRunning(unityUs);
+                            _sessionClock.SnapWindowStartToCurrentSecond();
+                            _windowCoordinator.RefreshWindowOpenSnapshots();
+                            FlushPendingTelemetryStoppedGap();
+                            countInHistory = false;
+                        }
+                        else
+                        {
+                            if (_transport.IsCollectingEnabled)
+                            {
+                                DrainCaptureSourcesIfRunning(unityUs);
+                            }
+                            countInHistory = true;
                         }
 
                         ApplyEffectiveTouchPaused();
@@ -776,7 +802,14 @@ namespace Asparagus.Sdk.Internal.Runtime
                         _windowCoordinator.RecordLifecycle(new LifecycleRecord(unityUs, LifecycleKind.Paused));
                         if (_windowCoordinator.CloseCurrentWindow(CloseReason.Paused, out Batch pausedBatch))
                         {
-                            HandleBatchClosed(pausedBatch);
+                            HandleBatchClosedInternal(pausedBatch, countInHistory);
+                        }
+
+                        if (_telemetryStoppedByGame)
+                        {
+                            // Keep tracking remaining stopped-telemetry silence across the pause.
+                            _hasTelemetryStopSessionUs = true;
+                            _telemetryStopSessionUs = _sessionClock.CurrentSessionUs;
                         }
                     }
                     else
@@ -838,7 +871,7 @@ namespace Asparagus.Sdk.Internal.Runtime
                                 {
                                     if (_windowCoordinator.CloseCurrentWindow(CloseReason.WindowFull, out Batch pauseBufferedBatch))
                                     {
-                                        HandleBatchClosed(pauseBufferedBatch);
+                                        HandleBatchClosedInternal(pauseBufferedBatch, pauseBufferedBatch.SensorBlocks.Count > 0);
                                     }
                                 }
                             }
@@ -908,13 +941,15 @@ namespace Asparagus.Sdk.Internal.Runtime
 
                 if (_windowCoordinator.IsSessionActive)
                 {
-                    DrainCaptureSourcesIfRunning();
+                    long unityUs = _clockSource.UnityTimeUs;
+                    bool countInHistory = PrepareWindowBeforeTerminalClose(unityUs, allowPauseBufferedDrain: true);
                     StopCaptureSources();
 
-                    _windowCoordinator.RecordLifecycle(new LifecycleRecord(_clockSource.UnityTimeUs, LifecycleKind.Quitting));
+                    _windowCoordinator.RecordLifecycle(new LifecycleRecord(unityUs, LifecycleKind.Quitting));
                     if (_windowCoordinator.CloseCurrentWindow(CloseReason.Quit, out Batch quitBatch))
                     {
-                        HandleBatchClosed(quitBatch);
+                        bool shouldCount = countInHistory && (!_isPaused || quitBatch.SensorBlocks.Count > 0);
+                        HandleBatchClosedInternal(quitBatch, shouldCount);
                     }
                     _windowCoordinator.EndSession();
                 }
@@ -923,6 +958,7 @@ namespace Asparagus.Sdk.Internal.Runtime
                     StopCaptureSources();
                 }
 
+                _hasTelemetryStopSessionUs = false;
                 FoldCompletedControlPlaneSession(persistToDisk: true);
                 _transport.StopSession();
                 _worker.Shutdown(250);
@@ -943,14 +979,25 @@ namespace Asparagus.Sdk.Internal.Runtime
                     return false;
                 }
 
-                if (_transport.IsCollectingEnabled && !_telemetryStoppedByGame && !_isPaused)
+                bool countInHistory;
+                if (_telemetryStoppedByGame || _isPaused)
                 {
-                    DrainCaptureSourcesIfRunning();
+                    _sessionClock.SnapWindowStartToCurrentSecond();
+                    _windowCoordinator.RefreshWindowOpenSnapshots();
+                    countInHistory = false;
+                }
+                else
+                {
+                    if (_transport.IsCollectingEnabled)
+                    {
+                        DrainCaptureSourcesIfRunning();
+                    }
+                    countInHistory = true;
                 }
 
                 if (_windowCoordinator.CloseCurrentWindow(reason, out Batch closed))
                 {
-                    HandleBatchClosed(closed);
+                    HandleBatchClosedInternal(closed, countInHistory);
                     return true;
                 }
 
@@ -1139,21 +1186,20 @@ namespace Asparagus.Sdk.Internal.Runtime
             {
                 if (_windowCoordinator.IsSessionActive)
                 {
-                    if (_transport.IsCollectingEnabled && !_telemetryStoppedByGame && !_isPaused)
-                    {
-                        DrainCaptureSourcesIfRunning();
-                    }
-
+                    long unityUs = _clockSource.UnityTimeUs;
+                    bool countInHistory = PrepareWindowBeforeTerminalClose(unityUs, allowPauseBufferedDrain: true);
                     StopCaptureSources();
 
                     if (_windowCoordinator.CloseCurrentWindow(CloseReason.SessionEnded, out Batch outgoingBatch))
                     {
-                        HandleBatchClosed(outgoingBatch);
+                        bool shouldCount = countInHistory && (!_isPaused || outgoingBatch.SensorBlocks.Count > 0);
+                        HandleBatchClosedInternal(outgoingBatch, shouldCount);
                     }
 
                     _windowCoordinator.EndSession();
                 }
 
+                _hasTelemetryStopSessionUs = false;
                 FoldCompletedControlPlaneSession(persistToDisk: false);
             }
             catch
@@ -1229,6 +1275,11 @@ namespace Asparagus.Sdk.Internal.Runtime
 
         private void HandleBatchClosed(Batch closedBatch)
         {
+            HandleBatchClosedInternal(closedBatch, countTowardsCollectionHistory: !_telemetryStoppedByGame && !_isPaused);
+        }
+
+        private void HandleBatchClosedInternal(Batch closedBatch, bool countTowardsCollectionHistory)
+        {
             if (closedBatch == null)
             {
                 return;
@@ -1236,7 +1287,7 @@ namespace Asparagus.Sdk.Internal.Runtime
 
             try
             {
-                if (_hasActiveControlPlaneSession && closedBatch.Header != null)
+                if (countTowardsCollectionHistory && _hasActiveControlPlaneSession && closedBatch.Header != null)
                 {
                     long deltaUs = closedBatch.Header.ClosedUs - closedBatch.Header.WindowStartUs;
                     if (deltaUs > 0L)
@@ -1253,6 +1304,62 @@ namespace Asparagus.Sdk.Internal.Runtime
             {
                 _windowCoordinator.RecycleBatch(closedBatch);
             }
+        }
+
+        private bool PrepareWindowBeforeTerminalClose(long unityUs, bool allowPauseBufferedDrain)
+        {
+            if (_telemetryStoppedByGame)
+            {
+                _sessionClock.SnapWindowStartToCurrentSecond();
+                _windowCoordinator.RefreshWindowOpenSnapshots();
+                FlushPendingTelemetryStoppedGap();
+                return false;
+            }
+
+            if (_isPaused)
+            {
+                if (allowPauseBufferedDrain && _transport.IsCollectingEnabled)
+                {
+                    DrainCaptureSourcesIfRunning(unityUs);
+                }
+
+                if (_motionAggregator.TotalMotionSampleCount == 0 && _windowCoordinator.TotalWindowGapCount == 0)
+                {
+                    _sessionClock.SnapWindowStartToCurrentSecond();
+                    _windowCoordinator.RefreshWindowOpenSnapshots();
+                    return false;
+                }
+
+                return _motionAggregator.TotalMotionSampleCount > 0;
+            }
+
+            if (_transport.IsCollectingEnabled)
+            {
+                DrainCaptureSourcesIfRunning(unityUs);
+            }
+
+            return true;
+        }
+
+        private void FlushPendingTelemetryStoppedGap()
+        {
+            if (!_hasTelemetryStopSessionUs)
+            {
+                return;
+            }
+
+            long nowSessionUs = _sessionClock.CurrentSessionUs;
+            long startUs = _telemetryStopSessionUs;
+            long endUs = nowSessionUs >= startUs ? nowSessionUs : startUs;
+            _windowCoordinator.RecordGap(new GapRecord
+            {
+                Signal = GapSignal.Everything,
+                Clock = Clock.Session,
+                StartTimeUs = startUs,
+                EndTimeUs = endUs,
+                Cause = GapCause.CaptureStopped
+            }, _onBatchClosedAction);
+            _hasTelemetryStopSessionUs = false;
         }
 
         private void EnsureHistoryBaselineLoaded()
