@@ -1,11 +1,11 @@
 # Asparagus Unity SDK (`com.nx10.asparagus`)
 
-High-frequency native motion, event-stream touch, game event, span, and state telemetry SDK for the Asparagus data stack (`asparagus-contract-v5`, Schema v3).
+High-frequency native motion, event-stream touch, game event, span, and state telemetry SDK for the Asparagus data stack (`asparagus-contract-v7`, Schema v3).
 
 - **Zero external dependencies:** Pure C# (`netstandard2.1`) + built-in Unity modules + self-compiling Android (`.java`) and iOS (`.mm`) native ring-buffer sensor plugins.
-- **Zero scene or prefab setup:** Automatically bootstraps its hidden `DontDestroyOnLoad` host (`[AsparagusSDK]`) on first session start.
+- **One-argument session start & zero scene wiring:** Call `AsparagusSDK.StartSession(yourApiKey)` — targets `https://control-plane.affectstack-stage.com/routes/asparagus/sessions/start` automatically and lazily bootstraps its hidden `DontDestroyOnLoad` host (`[AsparagusSDK]`).
 - **Input plug-and-play:** Supports both Unity Input System (`com.unity.inputsystem`, linked optionally by GUID) and Legacy Input Manager (`ENABLE_LEGACY_INPUT_MANAGER`).
-- **Total fault containment & zero hot-path GC:** Non-throwing public/lifecycle boundaries, off-main-thread Protobuf + GZip + persistent disk queue (`AsparagusWorker`), quantized delta + `Hold` folding, and strict W8-26 bounds splitting.
+- **Total fault containment & zero hot-path GC:** Non-throwing public/lifecycle boundaries, off-main-thread Protobuf + GZip + persistent disk queue + `CollectionHistory` persistence (`AsparagusWorker`), quantized delta + `Hold` folding, and strict W8-26 bounds splitting.
 
 ## Installation (Unity Package Manager)
 
@@ -14,14 +14,14 @@ High-frequency native motion, event-stream touch, game event, span, and state te
 2. Click **`+` -> Add package from git URL...**
 3. Enter:
    ```text
-   https://github.com/nx10-devs/unity_sdk_asparagus.git#v1.0.0
+   https://github.com/nx10-devs/unity_sdk_asparagus.git#v1.1.0
    ```
 
 ### Option 2: `Packages/manifest.json`
 ```json
 {
   "dependencies": {
-    "com.nx10.asparagus": "https://github.com/nx10-devs/unity_sdk_asparagus.git#v1.0.0"
+    "com.nx10.asparagus": "https://github.com/nx10-devs/unity_sdk_asparagus.git#v1.1.0"
   }
 }
 ```
@@ -33,9 +33,9 @@ using Asparagus.Sdk;
 using Asparagus.Sdk.Contracts;
 
 // Start a session (zero scene/prefab wiring required; sensors stay off until 200 + batch_endpoint)
-AsparagusSDK.StartSession("https://control-plane.example.com", yourApiKey);
+AsparagusSDK.StartSession(yourApiKey);
 
-// Send strongly-typed core events & spans
+// Send strongly-typed core events & spans (including CoreSpans.Banner)
 AsparagusSDK.SendCoreEvent.LevelStarted("1", attemptNumber: 1, difficulty: 0.5);
 AsparagusSDK.SetAttribute("game_level", "1");
 AsparagusSDK.SendCoreEvent.LevelSucceeded("1", score: 1250, duration: 42.5);
@@ -50,23 +50,9 @@ AsparagusSDK.StartTelemetry();
 AsparagusSDK.StopSession();
 ```
 
-## Stage Testing & Optional Sample Harness
+## Optional Sample Harness (Unity Inspector Setup)
 
-Before the Control Plane session-start route is live on stage, bootstrap directly with a minted stage token and batch endpoint (never hardcode tokens in source control):
+To try an interactive runtime test panel (Control Plane session controls, core event buttons, 1s desktop motion+swipe simulator, live status dashboard with `SettingsLabel` and `CollectionHistory`, and `.binpb` / `.binpb.gz` offline export):
 
-```csharp
-using Asparagus.Sdk;
-using Asparagus.Sdk.Internal.Network;
-
-AsparagusSDK.StartSessionWithStageOverride(new StageBootstrapConfig
-{
-    BatchEndpoint = stageBatchEndpoint,
-    Token = stageBearerToken,
-    IdOrg = orgId,
-    IdDeployment = deploymentId,
-    IdSource = sourceId,
-    IdSession = sessionId
-});
-```
-
-To try an interactive runtime test panel (Stage Override / Control Plane toggles, core event buttons, 1s desktop motion+swipe simulator, live status dashboard, and `.binpb` / `.binpb.gz` offline export), open **Window -> Package Manager -> Asparagus SDK -> Samples -> Stage Test & Diagnostics Harness -> Import**, add `AsparagusStageTestPanel` to any GameObject, and press **Play**.
+1. Open **Window -> Package Manager -> Asparagus SDK -> Samples -> Stage Test & Diagnostics Harness -> Import**.
+2. Add `AsparagusStageTestPanel` to any GameObject in your scene, paste your deployment API key into the **Api Key** field in the Unity Inspector (or set the `ASPARAGUS_API_KEY` environment variable — never commit a real API key to Git), and press **Play**.

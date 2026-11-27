@@ -10,25 +10,26 @@ using UnityEngine;
 namespace Asparagus.Sdk.Samples
 {
     /// <summary>
-    /// Self-contained DPI-scaled IMGUI Stage Test &amp; Diagnostics Panel.
-    /// Drop this component onto any GameObject in a scene and press Play (Editor, Android, or iOS).
-    /// Reads optional runtime credentials from environment variables only; contains zero hardcoded secrets.
+    /// Self-contained DPI-scaled IMGUI Stage Test &amp; Diagnostics Panel configured via Unity Inspector.
+    /// Drop this component onto any GameObject in a scene, paste your deployment API key into the
+    /// Inspector (or set ASPARAGUS_API_KEY in your environment), and press Play. Never commit a real API key.
     /// </summary>
     public sealed class AsparagusStageTestPanel : MonoBehaviour
     {
         private const int MaxLogLines = 12;
 
-        private bool _useStageOverride = true;
-        private string _stageEndpoint = string.Empty;
-        private string _stageToken = string.Empty;
-        private string _idOrg = string.Empty;
-        private string _idDeployment = string.Empty;
-        private string _idSource = string.Empty;
-        private string _idSession = string.Empty;
+        [Header("Asparagus Session Configuration")]
+        [Tooltip("Deployment API key from the Control Plane. Leave blank before committing to Git.")]
+        [SerializeField] private string _apiKey = string.Empty;
 
-        private string _controlPlaneUrl = string.Empty;
-        private string _apiKey = string.Empty;
-        private bool _demoFlag;
+        [Tooltip("Automatically call AsparagusSDK.StartSession when entering Play Mode.")]
+        [SerializeField] private bool _autoStartSessionOnStart = false;
+
+        [Tooltip("Send demo=true on session start (verifies key without collecting or uploading batches).")]
+        [SerializeField] private bool _demoMode = false;
+
+        [SerializeField] private string _appVersionOverride = string.Empty;
+        [SerializeField] private string _buildNumberOverride = string.Empty;
 
         private bool _touchPaused;
         private bool _popupSpanOpen;
@@ -42,22 +43,20 @@ namespace Asparagus.Sdk.Samples
 
         private void Awake()
         {
-            _stageEndpoint = ReadEnv("ASPARAGUS_ENDPOINT");
-            _stageToken = ReadEnv("ASPARAGUS_TOKEN");
-            _idOrg = ReadEnv("ASPARAGUS_ID_ORG");
-            _idDeployment = ReadEnv("ASPARAGUS_ID_DEPLOYMENT");
-            _idSource = ReadEnv("ASPARAGUS_ID_SOURCE");
-            _idSession = ReadEnv("ASPARAGUS_ID_SESSION");
-
-            _controlPlaneUrl = ReadEnv("ASPARAGUS_CONTROL_PLANE");
-            _apiKey = ReadEnv("ASPARAGUS_API_KEY");
-
-            if (string.IsNullOrEmpty(_stageEndpoint) && !string.IsNullOrEmpty(_controlPlaneUrl))
+            if (string.IsNullOrEmpty(_apiKey))
             {
-                _useStageOverride = false;
+                _apiKey = ReadEnv("ASPARAGUS_API_KEY");
             }
 
-            AppendLog("Ready. Configure Stage Override or Control Plane and click Start Session.");
+            AppendLog("Ready. Configure Api Key in Unity Inspector (or ASPARAGUS_API_KEY) and click Start Session.");
+        }
+
+        private void Start()
+        {
+            if (_autoStartSessionOnStart)
+            {
+                OnClickStartSession();
+            }
         }
 
         private void OnGUI()
@@ -77,8 +76,6 @@ namespace Asparagus.Sdk.Samples
 
                 GUILayout.Label("Asparagus Unity SDK — Stage Test & Diagnostics Panel");
 
-                DrawConnectionSection();
-                GUILayout.Space(8f);
                 DrawSessionControls();
                 GUILayout.Space(8f);
                 DrawEventsAndStateSection();
@@ -100,45 +97,17 @@ namespace Asparagus.Sdk.Samples
             }
         }
 
-        private void DrawConnectionSection()
-        {
-            GUILayout.BeginVertical("box");
-            GUILayout.Label("1. Connection Mode (R40-safe: env vars or runtime input, no hardcoded secrets)");
-
-            GUILayout.BeginHorizontal();
-            if (GUILayout.Toggle(_useStageOverride, "Stage Override Mode"))
-            {
-                _useStageOverride = true;
-            }
-            if (GUILayout.Toggle(!_useStageOverride, "Control Plane Mode"))
-            {
-                _useStageOverride = false;
-            }
-            GUILayout.EndHorizontal();
-
-            if (_useStageOverride)
-            {
-                _stageEndpoint = LabeledTextField("Batch Endpoint:", _stageEndpoint);
-                _stageToken = LabeledPasswordField("Bearer Token:", _stageToken);
-                _idOrg = LabeledTextField("id_org:", _idOrg);
-                _idDeployment = LabeledTextField("id_deployment:", _idDeployment);
-                _idSource = LabeledTextField("id_source:", _idSource);
-                _idSession = LabeledTextField("id_session:", _idSession);
-            }
-            else
-            {
-                _controlPlaneUrl = LabeledTextField("Control Plane URL:", _controlPlaneUrl);
-                _apiKey = LabeledPasswordField("API Key:", _apiKey);
-                _demoFlag = GUILayout.Toggle(_demoFlag, "Demo Mode (collect nothing)");
-            }
-
-            GUILayout.EndVertical();
-        }
-
         private void DrawSessionControls()
         {
             GUILayout.BeginVertical("box");
-            GUILayout.Label("2. Session & Telemetry Controls");
+            GUILayout.Label("1. Session & Telemetry Controls");
+
+            string keyStatus = string.IsNullOrEmpty(_apiKey)
+                ? "<Not set — enter Api Key in Unity Inspector>"
+                : "Configured (••••, length " + _apiKey.Length + ")";
+            GUILayout.Label("Inspector API Key: " + keyStatus);
+            GUILayout.Label("Session Endpoint: " + AsparagusTransportCoordinator.DefaultControlPlaneBaseUrl + "/routes/asparagus/sessions/start");
+            _demoMode = GUILayout.Toggle(_demoMode, "Demo Mode (verify key without collecting or uploading batches)");
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Start Session"))
@@ -182,7 +151,7 @@ namespace Asparagus.Sdk.Samples
         private void DrawEventsAndStateSection()
         {
             GUILayout.BeginVertical("box");
-            GUILayout.Label("3. Core Events, Spans & State Exerciser");
+            GUILayout.Label("2. Core Events, Spans & State Exerciser");
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("LevelStarted"))
@@ -260,7 +229,7 @@ namespace Asparagus.Sdk.Samples
         private void DrawSimulatorAndExportSection()
         {
             GUILayout.BeginVertical("box");
-            GUILayout.Label("4. Desktop Sensor/Touch Simulator & Step 5 Offline Exporter");
+            GUILayout.Label("3. Desktop Sensor/Touch Simulator & Step 5 Offline Exporter");
 
             GUILayout.BeginHorizontal();
             if (GUILayout.Button("Simulate 1s Hand Motion + Swipe"))
@@ -300,7 +269,7 @@ namespace Asparagus.Sdk.Samples
             AsparagusStatusSnapshot s = AsparagusSDK.GetStatusSnapshot();
 
             GUILayout.BeginVertical("box");
-            GUILayout.Label("5. Live SDK Status Dashboard");
+            GUILayout.Label("4. Live SDK Status Dashboard");
             GUILayout.Label(
                 "Initialized: " + s.IsInitialized
                 + " | Active: " + s.IsSessionActive
@@ -308,10 +277,14 @@ namespace Asparagus.Sdk.Samples
                 + " | StoppedByGame: " + s.IsTelemetryStoppedByGame
                 + " | Paused: " + s.IsPaused);
             GUILayout.Label(
-                "StageOverride: " + s.IsStageOverrideMode
+                "SettingsLabel: " + (string.IsNullOrEmpty(s.SettingsLabel) ? "<none>" : s.SettingsLabel)
                 + " | Refused: " + s.IsRefusedForAppRun
                 + " | SessionId: " + (string.IsNullOrEmpty(s.ActiveSessionId) ? "<none>" : s.ActiveSessionId)
                 + " | SettingsVer: " + (string.IsNullOrEmpty(s.SettingsVersion) ? "<default>" : s.SettingsVersion));
+            GUILayout.Label(
+                "History (Before): Sessions=" + s.HistorySessionsBefore
+                + ", CollectedS=" + s.HistoryCollectedSecondsBefore
+                + ", LongestS=" + s.HistoryLongestSessionSecondsBefore);
             GUILayout.Label(
                 "NextSeq: " + s.NextSequence
                 + " | MotionSrc: " + s.ActiveMotionSource
@@ -334,7 +307,7 @@ namespace Asparagus.Sdk.Samples
         private void DrawLogSection()
         {
             GUILayout.BeginVertical("box");
-            GUILayout.Label("6. Recent Panel Activity");
+            GUILayout.Label("5. Recent Panel Activity");
             for (int i = 0; i < _logLines.Count; i++)
             {
                 GUILayout.Label(_logLines[i]);
@@ -344,27 +317,14 @@ namespace Asparagus.Sdk.Samples
 
         private void OnClickStartSession()
         {
-            if (_useStageOverride)
-            {
-                string sessionId = string.IsNullOrEmpty(_idSession) ? ("stage-ses-" + DateTimeOffset.UtcNow.ToUnixTimeSeconds()) : _idSession;
-                StageBootstrapConfig cfg = new StageBootstrapConfig
-                {
-                    BatchEndpoint = _stageEndpoint,
-                    Token = _stageToken,
-                    IdOrg = _idOrg,
-                    IdDeployment = _idDeployment,
-                    IdSource = _idSource,
-                    IdSession = sessionId
-                };
-
-                bool ok = AsparagusSDK.StartSessionWithStageOverride(cfg);
-                AppendLog(ok ? "Stage Override session started (" + sessionId + ")." : "Stage Override start failed.");
-            }
-            else
-            {
-                bool ok = AsparagusSDK.StartSession(_controlPlaneUrl, _apiKey, demo: _demoFlag);
-                AppendLog(ok ? "Control Plane SessionStart dispatched." : "Control Plane start failed (check URL & API key).");
-            }
+            bool ok = AsparagusSDK.StartSession(
+                _apiKey,
+                appVersion: NullIfEmpty(_appVersionOverride),
+                buildNumber: NullIfEmpty(_buildNumberOverride),
+                demo: _demoMode);
+            AppendLog(ok
+                ? "SessionStart dispatched to Control Plane."
+                : "StartSession failed (set Api Key in Unity Inspector or ASPARAGUS_API_KEY).");
         }
 
         private void SimulateOneSecondMotionAndSwipe()
@@ -465,22 +425,9 @@ namespace Asparagus.Sdk.Samples
             _logLines.Add("[" + DateTime.Now.ToString("HH:mm:ss") + "] " + message);
         }
 
-        private static string LabeledTextField(string label, string value)
+        private static string NullIfEmpty(string value)
         {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.Width(140f));
-            string updated = GUILayout.TextField(value ?? string.Empty);
-            GUILayout.EndHorizontal();
-            return updated;
-        }
-
-        private static string LabeledPasswordField(string label, string value)
-        {
-            GUILayout.BeginHorizontal();
-            GUILayout.Label(label, GUILayout.Width(140f));
-            string updated = GUILayout.PasswordField(value ?? string.Empty, '*');
-            GUILayout.EndHorizontal();
-            return updated;
+            return string.IsNullOrEmpty(value) ? null : value;
         }
 
         private static float ComputeUiScale()

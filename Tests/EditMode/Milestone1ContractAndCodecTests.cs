@@ -557,10 +557,13 @@ namespace Asparagus.Sdk.Tests
         [Test]
         public void ContractCatalogAndProtoEnumNames_AreCompleteAndConsistent()
         {
-            Assert.AreEqual(9, CoreSpans.All.Length);
+            Assert.AreEqual(10, CoreSpans.All.Length);
+            Assert.AreEqual("banner", CoreSpans.Banner);
+            Assert.GreaterOrEqual(Array.IndexOf(CoreSpans.All, CoreSpans.Banner), 0);
             Assert.AreEqual("ad", CoreSpans.AdForType(null));
             Assert.AreEqual("ad", CoreSpans.AdForType(string.Empty));
             Assert.AreEqual("ad_rewarded", CoreSpans.AdForType("rewarded"));
+            Assert.AreEqual("ad_banner", CoreSpans.AdForType("banner"));
 
             Assert.AreEqual(11, CoreEventNames.All.Length);
             Assert.IsTrue(CoreEventNames.TryGetMetadata(CoreEventNames.GameLevelStarted, out CoreEventMetadata lvlStart));
@@ -585,6 +588,69 @@ namespace Asparagus.Sdk.Tests
             Assert.AreEqual(GapSignal.Magnetometer, gmag);
             Assert.IsTrue(ProtoEnumNames.TryParseMotionSource(MotionSource.Native.ToProtoName(), out MotionSource msrc));
             Assert.AreEqual(MotionSource.Native, msrc);
+        }
+
+        [Test]
+        public void SessionJsonCodec_SerializesCollectionHistory_OmitsWhenZero_AndQuotesUint64Seconds()
+        {
+            // Zero history -> "history" MUST be omitted completely
+            SessionStartRequest reqZero = new SessionStartRequest
+            {
+                ApiKey = "k",
+                DeviceIdentifier = "d",
+                History = default
+            };
+            Assert.IsTrue(SessionJsonCodec.TrySerializeSessionStartRequest(reqZero, out string jsonZero, out string errZero), errZero);
+            StringAssert.DoesNotContain("\"history\"", jsonZero);
+
+            // Non-zero history including uint64 > uint.MaxValue -> collected_seconds_before MUST be a JSON string
+            SessionStartRequest reqHist = new SessionStartRequest
+            {
+                ApiKey = "k",
+                DeviceIdentifier = "d",
+                History = new CollectionHistory(12u, 5000000000UL, 3600u)
+            };
+            Assert.IsTrue(SessionJsonCodec.TrySerializeSessionStartRequest(reqHist, out string jsonHist, out string errHist), errHist);
+            StringAssert.Contains("\"history\":{\"sessions_before\":12,\"collected_seconds_before\":\"5000000000\",\"longest_session_seconds_before\":3600}", jsonHist);
+        }
+
+        [Test]
+        public void SessionJsonCodec_ParsesSettingsLabel_AndHandlesOmittedOrNullSettings()
+        {
+            // Non-collecting response with settings_label and omitted "settings"
+            const string omittedSettingsJson = @"{
+                ""status"": ""success"",
+                ""data"": {
+                    ""id_org"": ""org-1"",
+                    ""id_deployment"": ""dep-1"",
+                    ""id_source"": ""src-1"",
+                    ""id_session"": ""ses-holdout"",
+                    ""token"": ""tok-holdout"",
+                    ""server_utc_ms"": ""1794736860000"",
+                    ""batch_endpoint"": """",
+                    ""settings_label"": ""holdout-10pct""
+                }
+            }";
+            Assert.IsTrue(SessionJsonCodec.TryParseSessionStartResponse(omittedSettingsJson, out SessionStartResponse r1, out _, out string e1), e1);
+            Assert.AreEqual("holdout-10pct", r1.SettingsLabel);
+            Assert.AreEqual(string.Empty, r1.BatchEndpoint);
+            Assert.IsNotNull(r1.Settings);
+            Assert.AreEqual(SessionSettings.DefaultAccelerometerHz, r1.Settings.AccelerometerHz);
+
+            // Explicit null "settings" with camelCase settingsLabel
+            const string nullSettingsJson = @"{
+                ""status"": ""success"",
+                ""data"": {
+                    ""id_session"": ""ses-null"",
+                    ""batch_endpoint"": """",
+                    ""settings"": null,
+                    ""settingsLabel"": ""share-beta""
+                }
+            }";
+            Assert.IsTrue(SessionJsonCodec.TryParseSessionStartResponse(nullSettingsJson, out SessionStartResponse r2, out _, out string e2), e2);
+            Assert.AreEqual("share-beta", r2.SettingsLabel);
+            Assert.IsNotNull(r2.Settings);
+            Assert.AreEqual(SessionSettings.DefaultBatchLengthS, r2.Settings.BatchLengthS);
         }
 
         // ====================================================================

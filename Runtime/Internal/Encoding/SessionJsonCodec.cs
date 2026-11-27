@@ -112,6 +112,12 @@ namespace Asparagus.Sdk.Internal.Encoding
                     output.Append("true");
                 }
 
+                if (!request.History.IsZero)
+                {
+                    AppendFieldName(output, "history", ref first);
+                    AppendCollectionHistory(output, request.History);
+                }
+
                 output.Append('}');
                 return true;
             }
@@ -120,6 +126,28 @@ namespace Asparagus.Sdk.Internal.Encoding
                 error = ex.Message;
                 return false;
             }
+        }
+
+        private static void AppendCollectionHistory(StringBuilder sb, CollectionHistory history)
+        {
+            sb.Append('{');
+            bool first = true;
+            if (history.SessionsBefore != 0u)
+            {
+                AppendFieldName(sb, "sessions_before", ref first);
+                sb.Append(history.SessionsBefore.ToString(CultureInfo.InvariantCulture));
+            }
+            if (history.CollectedSecondsBefore != 0UL)
+            {
+                AppendFieldName(sb, "collected_seconds_before", ref first);
+                AppendJsonString(sb, history.CollectedSecondsBefore.ToString(CultureInfo.InvariantCulture));
+            }
+            if (history.LongestSessionSecondsBefore != 0u)
+            {
+                AppendFieldName(sb, "longest_session_seconds_before", ref first);
+                sb.Append(history.LongestSessionSecondsBefore.ToString(CultureInfo.InvariantCulture));
+            }
+            sb.Append('}');
         }
 
         private static void AppendSdkVersion(StringBuilder sb, SdkVersion version)
@@ -681,6 +709,12 @@ namespace Asparagus.Sdk.Internal.Encoding
                         {
                             if (!TryReadModels(ref reader, target.Models)) return false;
                         }
+                        break;
+
+                    case "settings_label":
+                    case "settingsLabel":
+                        if (!TryReadNullableString(ref reader, out string settingsLabel)) return false;
+                        if (settingsLabel != null) target.SettingsLabel = settingsLabel;
                         break;
 
                     default:

@@ -17,6 +17,7 @@ namespace Asparagus.Sdk
 
         public readonly string ActiveSessionId;
         public readonly string SettingsVersion;
+        public readonly string SettingsLabel;
         public readonly ulong NextSequence;
         public readonly CaptureSource ActiveMotionSource;
         public readonly TouchMode ActiveTouchMode;
@@ -36,6 +37,10 @@ namespace Asparagus.Sdk
         public readonly int SessionRetryAttempt;
         public readonly int UploadRetryAttempt;
         public readonly int Consecutive401Count;
+
+        public readonly uint HistorySessionsBefore;
+        public readonly ulong HistoryCollectedSecondsBefore;
+        public readonly uint HistoryLongestSessionSecondsBefore;
 
         public AsparagusStatusSnapshot(
             bool isInitialized,
@@ -63,7 +68,11 @@ namespace Asparagus.Sdk
             long diskQueuedBytes,
             int sessionRetryAttempt,
             int uploadRetryAttempt,
-            int consecutive401Count)
+            int consecutive401Count,
+            string settingsLabel = null,
+            uint historySessionsBefore = 0u,
+            ulong historyCollectedSecondsBefore = 0UL,
+            uint historyLongestSessionSecondsBefore = 0u)
         {
             IsInitialized = isInitialized;
             IsSessionActive = isSessionActive;
@@ -75,6 +84,7 @@ namespace Asparagus.Sdk
 
             ActiveSessionId = activeSessionId ?? string.Empty;
             SettingsVersion = settingsVersion ?? string.Empty;
+            SettingsLabel = settingsLabel ?? string.Empty;
             NextSequence = nextSequence;
             ActiveMotionSource = activeMotionSource;
             ActiveTouchMode = activeTouchMode;
@@ -94,6 +104,10 @@ namespace Asparagus.Sdk
             SessionRetryAttempt = sessionRetryAttempt;
             UploadRetryAttempt = uploadRetryAttempt;
             Consecutive401Count = consecutive401Count;
+
+            HistorySessionsBefore = historySessionsBefore;
+            HistoryCollectedSecondsBefore = historyCollectedSecondsBefore;
+            HistoryLongestSessionSecondsBefore = historyLongestSessionSecondsBefore;
         }
     }
 }

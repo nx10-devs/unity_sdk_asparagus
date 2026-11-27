@@ -31,6 +31,70 @@ namespace Asparagus.Sdk.Contracts
         }
     }
 
+    /// <summary>
+    /// What one install of one game has collected on this device before the session now starting
+    /// (<c>session.proto</c> <c>CollectionHistory</c>, Decisions 160-161).
+    /// </summary>
+    public struct CollectionHistory : IEquatable<CollectionHistory>
+    {
+        public uint SessionsBefore;
+        public ulong CollectedSecondsBefore;
+        public uint LongestSessionSecondsBefore;
+
+        public CollectionHistory(
+            uint sessionsBefore,
+            ulong collectedSecondsBefore,
+            uint longestSessionSecondsBefore)
+        {
+            SessionsBefore = sessionsBefore;
+            CollectedSecondsBefore = collectedSecondsBefore;
+            LongestSessionSecondsBefore = longestSessionSecondsBefore;
+        }
+
+        public bool IsZero
+        {
+            get
+            {
+                return SessionsBefore == 0u
+                    && CollectedSecondsBefore == 0UL
+                    && LongestSessionSecondsBefore == 0u;
+            }
+        }
+
+        public bool Equals(CollectionHistory other)
+        {
+            return SessionsBefore == other.SessionsBefore
+                && CollectedSecondsBefore == other.CollectedSecondsBefore
+                && LongestSessionSecondsBefore == other.LongestSessionSecondsBefore;
+        }
+
+        public override bool Equals(object obj)
+        {
+            return obj is CollectionHistory other && Equals(other);
+        }
+
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = (int)SessionsBefore;
+                hash = (hash * 397) ^ CollectedSecondsBefore.GetHashCode();
+                hash = (hash * 397) ^ (int)LongestSessionSecondsBefore;
+                return hash;
+            }
+        }
+
+        public static bool operator ==(CollectionHistory left, CollectionHistory right)
+        {
+            return left.Equals(right);
+        }
+
+        public static bool operator !=(CollectionHistory left, CollectionHistory right)
+        {
+            return !left.Equals(right);
+        }
+    }
+
     public sealed class SessionStartRequest
     {
         public string ApiKey = string.Empty;
@@ -43,6 +107,7 @@ namespace Asparagus.Sdk.Contracts
         public string BuildNumber = string.Empty;
         public readonly Dictionary<string, Value> SessionProperties = new Dictionary<string, Value>(StringComparer.Ordinal);
         public bool Demo;
+        public CollectionHistory History;
 
         public void SetSdkVersion(SdkVersion version)
         {
@@ -62,6 +127,7 @@ namespace Asparagus.Sdk.Contracts
             BuildNumber = string.Empty;
             SessionProperties.Clear();
             Demo = false;
+            History = default;
         }
     }
 
@@ -84,7 +150,7 @@ namespace Asparagus.Sdk.Contracts
     }
 
     /// <summary>
-    /// All 26 session settings plus <see cref="Version"/> from <c>session.proto</c> and <c>defaults.json</c>.
+    /// All 26 session settings plus <see cref="Version"/> from <c>session.proto</c> and <c>02-unity-sdk.md</c>.
     /// Built-in defaults are used strictly as a safety net when a setting is omitted or invalid per contract rules.
     /// </summary>
     public sealed class SessionSettings
@@ -315,6 +381,7 @@ namespace Asparagus.Sdk.Contracts
 
         public SessionSettings Settings = SessionSettings.CreateDefaults();
         public readonly List<ModelReference> Models = new List<ModelReference>();
+        public string SettingsLabel = string.Empty;
 
         public void Clear()
         {
@@ -337,6 +404,7 @@ namespace Asparagus.Sdk.Contracts
                 Settings.ResetToDefaults();
             }
             Models.Clear();
+            SettingsLabel = string.Empty;
         }
     }
 }

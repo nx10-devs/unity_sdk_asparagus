@@ -61,6 +61,24 @@ message SessionStartRequest {
   map<string, Value> session_properties = 8;
   // A demo session collects nothing: the answer carries no batch endpoint.
   bool demo = 9;
+  // What this install of this game has collected before this session, as
+  // the SDK knows it. The server picks the device's settings with it. An SDK
+  // that sends none is a device that the server does not know.
+  CollectionHistory history = 10;
+}
+
+// What one install of one game has collected, counted by the SDK on the
+// device before the session that it now starts. The SDK keeps the counts
+// across launches of the app. They are lost with the app's data, and a
+// device that lost them is unknown again: it sends zeros, or no history.
+// The server keeps none of it.
+message CollectionHistory {
+  // How many asparagus sessions it has started before this one.
+  uint32 sessions_before = 1;
+  // The seconds of collection in those sessions, added up.
+  uint64 collected_seconds_before = 2;
+  // The seconds of collection of the longest of those sessions.
+  uint32 longest_session_seconds_before = 3;
 }
 
 // What the phone is. Never its name, which can be a person's name.
@@ -137,6 +155,13 @@ message SessionStartResponse {
 
   // Models the SDK may fetch.
   repeated ModelReference models = 12;
+
+  // The label of the share of the game's devices that this device belongs
+  // to, as the game's owner set it in the Control Plane. It is the same at
+  // every session start of this device while the game's shares stay as they
+  // are. It is there also when the device's share does not collect. Empty
+  // when the game has no shares.
+  string settings_label = 13;
 }
 
 enum MotionSource {

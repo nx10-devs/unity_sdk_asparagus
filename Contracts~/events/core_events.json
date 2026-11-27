@@ -524,6 +524,12 @@
       "meaning": "One step of a tutorial or of a player's first steps in the game, from its start to its end.",
       "sent_as": ["tutorial_or_onboarding"],
       "sent_as_prefixes": []
+    },
+    {
+      "name": "banner",
+      "meaning": "One banner ad, from when it shows to when it is taken away: it can stay on the screen while the player plays, and while another ad shows.",
+      "sent_as": ["banner", "ad_banner"],
+      "sent_as_prefixes": []
     }
   ],
   "state_keys": [

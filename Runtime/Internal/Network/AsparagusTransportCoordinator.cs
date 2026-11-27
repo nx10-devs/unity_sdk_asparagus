@@ -26,6 +26,7 @@ namespace Asparagus.Sdk.Internal.Network
     /// </summary>
     public sealed class AsparagusTransportCoordinator
     {
+        public const string DefaultControlPlaneBaseUrl = "https://control-plane.affectstack-stage.com";
         private const string SessionStartPath = "/routes/asparagus/sessions/start";
         private const string ContentTypeJson = "application/json";
         private const string ContentTypeProtobuf = "application/x-protobuf";
@@ -48,6 +49,7 @@ namespace Asparagus.Sdk.Internal.Network
         private SessionStartResponse _activeResponse;
 
         private bool _sessionRequestInFlight;
+        private bool _pendingDeferredSessionStart;
         private uint _sessionGeneration;
         private bool _uploadInFlight;
         private int _sessionRetryAttempt;
@@ -58,6 +60,7 @@ namespace Asparagus.Sdk.Internal.Network
         private long _nextSessionRetrySteadyMs;
         private long _nextUploadRetrySteadyMs;
 
+        public Func<CollectionHistory> HistoryProvider;
         public Action OnBeforeSessionActivated;
         public Action<SessionStartResponse, uint> OnSessionStarted;
         public Action OnStageTokenRejected;
@@ -164,6 +167,15 @@ namespace Asparagus.Sdk.Internal.Network
                 _lastTickSteadyMs = _clockSource.SteadyTimeUs / 1000L;
                 _worker.SetCanAcceptImmediateUpload(false);
 
+                if (!_worker.IsStartupLoadComplete)
+                {
+                    // Defer SessionStart POST until background worker completes loading asparagus_history.dat.
+                    _pendingDeferredSessionStart = true;
+                    _state = TransportState.StartingSession;
+                    return true;
+                }
+
+                _pendingDeferredSessionStart = false;
                 DispatchSessionStartRequest();
                 return true;
             }
@@ -211,6 +223,7 @@ namespace Asparagus.Sdk.Internal.Network
                 _lastStartRequest = null;
                 _sessionGeneration++;
                 _sessionRequestInFlight = false;
+                _pendingDeferredSessionStart = false;
                 _sessionRetryAttempt = 0;
                 _uploadRetryAttempt = 0;
                 _consecutive401Count = 0;
@@ -244,6 +257,7 @@ namespace Asparagus.Sdk.Internal.Network
         {
             _sessionGeneration++;
             _sessionRequestInFlight = false;
+            _pendingDeferredSessionStart = false;
             _isCollectingEnabled = false;
             if (!_isRefusedForAppRun)
             {
@@ -262,6 +276,14 @@ namespace Asparagus.Sdk.Internal.Network
                 if (_isRefusedForAppRun)
                 {
                     _worker.SetCanAcceptImmediateUpload(false);
+                    return;
+                }
+
+                if (_pendingDeferredSessionStart && _worker.IsStartupLoadComplete && !_sessionRequestInFlight)
+                {
+                    _pendingDeferredSessionStart = false;
+                    _worker.SetCanAcceptImmediateUpload(false);
+                    DispatchSessionStartRequest();
                     return;
                 }
 
@@ -380,6 +402,17 @@ namespace Asparagus.Sdk.Internal.Network
             if (_sessionRequestInFlight || _isRefusedForAppRun || string.IsNullOrEmpty(_controlPlaneBaseUrl) || _lastStartRequest == null)
             {
                 return;
+            }
+
+            if (HistoryProvider != null)
+            {
+                try
+                {
+                    _lastStartRequest.History = HistoryProvider();
+                }
+                catch
+                {
+                }
             }
 
             if (!SessionJsonCodec.TrySerializeSessionStartRequest(_lastStartRequest, out string json, out string err))

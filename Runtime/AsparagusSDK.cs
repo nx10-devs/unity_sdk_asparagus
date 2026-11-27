@@ -14,7 +14,7 @@ namespace Asparagus.Sdk
     /// </summary>
     public static class AsparagusSDK
     {
-        public static readonly SdkVersion SdkVersion = new SdkVersion(1, 0, 0);
+        public static readonly SdkVersion SdkVersion = new SdkVersion(1, 1, 0);
 
         private sealed class StaticEventSink : IEventSink
         {
@@ -43,6 +43,22 @@ namespace Asparagus.Sdk
         }
 
         public static bool StartSession(
+            string apiKey,
+            IReadOnlyDictionary<string, Value> sessionProperties = null,
+            string appVersion = null,
+            string buildNumber = null,
+            bool demo = false)
+        {
+            return StartSession(
+                AsparagusTransportCoordinator.DefaultControlPlaneBaseUrl,
+                apiKey,
+                sessionProperties,
+                appVersion,
+                buildNumber,
+                demo);
+        }
+
+        public static bool StartSession(
             string controlPlaneBaseUrl,
             string apiKey,
             IReadOnlyDictionary<string, Value> sessionProperties = null,
@@ -61,6 +77,7 @@ namespace Asparagus.Sdk
             }
         }
 
+        [Obsolete("Stage session start is live on the Control Plane; use AsparagusSDK.StartSession(apiKey) instead.")]
         public static bool StartSessionWithStageOverride(StageBootstrapConfig stageConfig)
         {
             try
@@ -74,6 +91,7 @@ namespace Asparagus.Sdk
             }
         }
 
+        [Obsolete("Stage session start is live on the Control Plane; use AsparagusSDK.StartSession(apiKey) instead.")]
         public static void UpdateStageToken(string newToken)
         {
             try

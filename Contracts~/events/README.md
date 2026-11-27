@@ -4,8 +4,8 @@ This folder holds what an SDK ships about events: the list of our events, and th
 
 | File | What it is |
 | --- | --- |
-| `core_events.json` | The core events with their fields, the spans with the names they are sent as, the standard state keys, and the two outcome texts. One command writes it from the Python lists, and nobody edits it by hand. |
-| `README.md` | This file: what the JSON file holds, and the seventeen rules. It is written by hand. |
+| `core_events.json` | The core events with their fields, the spans with the names they are sent as, the standard state keys, the SDK's own state keys, and the two outcome texts. One command writes it from the Python lists, and nobody edits it by hand. |
+| `README.md` | This file: what the JSON file holds, and the eighteen rules. It is written by hand. |
 
 The lists themselves are in `packages/asparagus-data-processing/events`. That folder's `AGENTS.md` says how a list is changed, and gives the command that writes the JSON file again. `@nx10/asparagus-contract` exports the contents of the JSON file to TypeScript.
 
@@ -16,8 +16,9 @@ The list is a recommendation, and never a gate. Rule 1 says so, and every other 
 | Part | What it holds |
 | --- | --- |
 | `events` | The eleven core events, in an order that does not change |
-| `spans` | The four span names of ours |
+| `spans` | The ten span names of ours |
 | `state_keys` | The three standard state keys |
+| `sdk_state_keys` | The SDK's own state keys, which the SDK sets itself |
 | `outcome_converted` | The text `Converted` |
 | `outcome_unconverted` | The text `UnConverted` |
 
@@ -49,7 +50,7 @@ A span:
 | `name` | Our name for the span |
 | `meaning` | One sentence |
 | `sent_as` | The names that mean this span, each a whole name |
-| `sent_as_prefixes` | Any name that starts with one of these means this span as well |
+| `sent_as_prefixes` | Any name that starts with one of these means this span as well, unless it is a whole name of a span: every whole name is asked first |
 
 A state key:
 
@@ -61,7 +62,7 @@ A state key:
 
 ## The spans
 
-Four span names of ours:
+Ten span names of ours:
 
 | Our span | Sent as | Opened by | Closed by |
 | --- | --- | --- | --- |
@@ -69,8 +70,14 @@ Four span names of ours:
 | `ad` | `ad`, and any name that starts with `ad_` | `ad_started` | `ad_finished` |
 | `purchase_view` | `purchase_view` | `in_app_purchase_view_opened` | `in_app_purchase_view_closed` |
 | `round` | `round` | `gambling_round_started` | `gambling_round_finished` |
+| `rewarded_offer` | `rewarded_offer` | none | none |
+| `backgrounded` | `backgrounded` | none | none |
+| `settings` | `settings` | none | none |
+| `popup` | `popup` | none | none |
+| `tutorial_or_onboarding` | `tutorial_or_onboarding` | none | none |
+| `banner` | `banner`, `ad_banner` | none | none |
 
-An ad's span is sent as `ad_` followed by the value of its `type`, such as `ad_banner`. A banner can stay up while another ad plays, and two spans that overlap need two names. With no `type`, it is sent as `ad`. On the server all of them are our span `ad`, and the type is a field.
+An ad's span is sent as `ad_` followed by the value of its `type`, such as `ad_interstitial`. A banner can stay up while another ad plays, and two spans that overlap need two names, so a banner's span, `ad_banner` or `banner`, is our span `banner`. With no `type`, an ad's span is sent as `ad`. On the server every other name that starts with `ad_` is our span `ad`, and the type is a field.
 
 ## The outcome
 
@@ -92,9 +99,20 @@ Three keys of ours say what the player is doing. Each is fed by one attribute of
 
 A game that uses another attribute is given a mapping row.
 
+## The SDK's own state keys
+
+The SDK sets these keys of the state itself, and a game sets none. Their names start with `nx10_`.
+
+| Key | Type | What it means |
+| --- | --- | --- |
+| `nx10_screen_brightness` | `NUMBER` | The brightness of the screen as the system reports it, from 0, the least, to 1, the most. |
+| `nx10_screen_locked` | `FLAG` | True while the device is locked, and false while it is not. |
+
+A new value of the brightness is sent when it differs from the last one sent by at least 0.05, and never more than once a second. The lock is sent at each change.
+
 ## The rules
 
-Seventeen rules, under numbers that do not change. The words they use:
+Eighteen rules, under numbers that do not change. The words they use:
 
 - **A core event** is one of the eleven events of `core_events.json`, and **a core call** is the SDK's own call that sends one.
 - **The marker** says whether an event opens a span or closes one, and **the number** is the span's number within its session. The SDK sends both with the event, as `span_marker` and `span_number` in the batch format.
@@ -129,3 +147,7 @@ Seventeen rules, under numbers that do not change. The words they use:
 ### Resolving a name
 
 17. A mapping row for that game wins. Otherwise a core name means itself. Anything else is kept as sent and counted as unmapped.
+
+### State
+
+18. A state key that starts with `nx10_` is the SDK's own. The SDK sets it itself, and a game sets none. The backend accepts it as it accepts every key of the state, and stores it with the rest.

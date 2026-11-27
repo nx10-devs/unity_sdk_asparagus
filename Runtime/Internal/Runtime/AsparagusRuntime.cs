@@ -15,7 +15,7 @@ namespace Asparagus.Sdk.Internal.Runtime
 {
     public sealed class AsparagusRuntimeOptions
     {
-        public SdkVersion SdkVersion = new SdkVersion(1, 0, 0);
+        public SdkVersion SdkVersion = new SdkVersion(1, 1, 0);
         public string StorageBaseDirectory;
         public IClockSource ClockSource;
         public IHttpTransport HttpTransport;
@@ -83,6 +83,7 @@ namespace Asparagus.Sdk.Internal.Runtime
         private readonly SystemStateMonitor _systemStateMonitor;
         private readonly IDeviceMetadataProvider _deviceMetadataProvider;
         private readonly DiskBatchQueue _diskQueue;
+        private readonly CollectionHistoryStore _historyStore;
         private readonly BatchWindowCoordinator _windowCoordinator;
         private readonly AsparagusWorker _worker;
         private readonly IHttpTransport _httpTransport;
@@ -106,6 +107,15 @@ namespace Asparagus.Sdk.Internal.Runtime
         private string _lastAppVersion;
         private string _lastBuildNumber;
         private bool _lastDemo;
+
+        // CollectionHistory accounting (asparagus-contract-v7, Decisions 160-161)
+        private bool _historyInitializedFromWorker;
+        private uint _baseSessionsBefore;
+        private ulong _baseCollectedSecondsBefore;
+        private uint _baseLongestSessionSecondsBefore;
+        private bool _hasActiveControlPlaneSession;
+        private long _currentSessionCollectedUs;
+        private CollectionHistory _activeSessionSentHistory;
 
         private bool _telemetryStoppedByGame;
         private bool _hasTelemetryStopSessionUs;
@@ -160,6 +170,7 @@ namespace Asparagus.Sdk.Internal.Runtime
 
             string storageRoot = ResolveStorageDirectory(opt.StorageBaseDirectory);
             _diskQueue = new DiskBatchQueue(storageRoot);
+            _historyStore = new CollectionHistoryStore(storageRoot);
             _windowCoordinator = new BatchWindowCoordinator(
                 _clockSource,
                 _sessionClock,
@@ -173,7 +184,7 @@ namespace Asparagus.Sdk.Internal.Runtime
                 _motionCoordinator,
                 _diskQueue);
 
-            _worker = new AsparagusWorker(_diskQueue, opt.RunWorkerSynchronouslyForTests);
+            _worker = new AsparagusWorker(_diskQueue, opt.RunWorkerSynchronouslyForTests, _historyStore);
             _httpTransport = opt.HttpTransport ?? new UnityWebRequestHttpTransport();
             _transport = new AsparagusTransportCoordinator(
                 _httpTransport,
@@ -190,6 +201,7 @@ namespace Asparagus.Sdk.Internal.Runtime
             _motionDrainAdapter = new MotionDrainAdapter(this);
             _touchDrainAdapter = new TouchDrainAdapter(this);
 
+            _transport.HistoryProvider = GetHistoryForNextSessionStart;
             _transport.OnBeforeSessionActivated = HandleBeforeSessionActivated;
             _transport.OnSessionStarted = HandleSessionStarted;
 
@@ -242,6 +254,22 @@ namespace Asparagus.Sdk.Internal.Runtime
         public AsparagusWorker Worker
         {
             get { return _worker; }
+        }
+
+        public bool StartSession(
+            string apiKey,
+            IReadOnlyDictionary<string, Value> sessionProperties = null,
+            string appVersion = null,
+            string buildNumber = null,
+            bool demo = false)
+        {
+            return StartSession(
+                AsparagusTransportCoordinator.DefaultControlPlaneBaseUrl,
+                apiKey,
+                sessionProperties,
+                appVersion,
+                buildNumber,
+                demo);
         }
 
         public bool StartSession(
@@ -362,6 +390,7 @@ namespace Asparagus.Sdk.Internal.Runtime
                 }
 
                 _hasTelemetryStopSessionUs = false;
+                FoldCompletedControlPlaneSession(persistToDisk: true);
                 _transport.StopSession();
             }
             catch
@@ -779,6 +808,7 @@ namespace Asparagus.Sdk.Internal.Runtime
                             StopCaptureSources();
                             _windowCoordinator.EndSession();
                             _hasTelemetryStopSessionUs = false;
+                            FoldCompletedControlPlaneSession(persistToDisk: true);
 
                             if (!_transport.IsStageOverrideMode
                                 && !string.IsNullOrEmpty(_lastControlPlaneBaseUrl)
@@ -893,6 +923,7 @@ namespace Asparagus.Sdk.Internal.Runtime
                     StopCaptureSources();
                 }
 
+                FoldCompletedControlPlaneSession(persistToDisk: true);
                 _transport.StopSession();
                 _worker.Shutdown(250);
                 _worker.DrainRecycledBatches(_recycleBatchAction);
@@ -1060,6 +1091,9 @@ namespace Asparagus.Sdk.Internal.Runtime
             {
                 SessionStartResponse resp = _transport.ActiveSessionResponse;
                 SessionSettings settings = _transport.ActiveSettings;
+                CollectionHistory displayHistory = _hasActiveControlPlaneSession
+                    ? _activeSessionSentHistory
+                    : GetHistoryForNextSessionStart();
 
                 return new AsparagusStatusSnapshot(
                     isInitialized: !_isShutdown,
@@ -1087,7 +1121,11 @@ namespace Asparagus.Sdk.Internal.Runtime
                     diskQueuedBytes: _diskQueue.TotalQueuedBytes,
                     sessionRetryAttempt: _transport.SessionRetryAttempt,
                     uploadRetryAttempt: _transport.UploadRetryAttempt,
-                    consecutive401Count: _transport.Consecutive401Count);
+                    consecutive401Count: _transport.Consecutive401Count,
+                    settingsLabel: resp != null ? resp.SettingsLabel : string.Empty,
+                    historySessionsBefore: displayHistory.SessionsBefore,
+                    historyCollectedSecondsBefore: displayHistory.CollectedSecondsBefore,
+                    historyLongestSessionSecondsBefore: displayHistory.LongestSessionSecondsBefore);
             }
             catch
             {
@@ -1099,24 +1137,24 @@ namespace Asparagus.Sdk.Internal.Runtime
         {
             try
             {
-                if (!_windowCoordinator.IsSessionActive)
+                if (_windowCoordinator.IsSessionActive)
                 {
-                    return;
+                    if (_transport.IsCollectingEnabled && !_telemetryStoppedByGame && !_isPaused)
+                    {
+                        DrainCaptureSourcesIfRunning();
+                    }
+
+                    StopCaptureSources();
+
+                    if (_windowCoordinator.CloseCurrentWindow(CloseReason.SessionEnded, out Batch outgoingBatch))
+                    {
+                        HandleBatchClosed(outgoingBatch);
+                    }
+
+                    _windowCoordinator.EndSession();
                 }
 
-                if (_transport.IsCollectingEnabled && !_telemetryStoppedByGame && !_isPaused)
-                {
-                    DrainCaptureSourcesIfRunning();
-                }
-
-                StopCaptureSources();
-
-                if (_windowCoordinator.CloseCurrentWindow(CloseReason.SessionEnded, out Batch outgoingBatch))
-                {
-                    HandleBatchClosed(outgoingBatch);
-                }
-
-                _windowCoordinator.EndSession();
+                FoldCompletedControlPlaneSession(persistToDisk: false);
             }
             catch
             {
@@ -1130,6 +1168,20 @@ namespace Asparagus.Sdk.Internal.Runtime
                 if (response == null)
                 {
                     return;
+                }
+
+                // Count every Control Plane session start (even non-collecting / demo) per session.proto lines 70-82.
+                if (!_transport.IsStageOverrideMode)
+                {
+                    EnsureHistoryBaselineLoaded();
+                    FoldCompletedControlPlaneSession(persistToDisk: false);
+                    _activeSessionSentHistory = new CollectionHistory(
+                        _baseSessionsBefore,
+                        _baseCollectedSecondsBefore,
+                        _baseLongestSessionSecondsBefore);
+                    _hasActiveControlPlaneSession = true;
+                    _currentSessionCollectedUs = 0L;
+                    _worker.EnqueueSaveHistory(ComputeNextLaunchHistory());
                 }
 
                 if (!_transport.IsCollectingEnabled)
@@ -1184,6 +1236,16 @@ namespace Asparagus.Sdk.Internal.Runtime
 
             try
             {
+                if (_hasActiveControlPlaneSession && closedBatch.Header != null)
+                {
+                    long deltaUs = closedBatch.Header.ClosedUs - closedBatch.Header.WindowStartUs;
+                    if (deltaUs > 0L)
+                    {
+                        _currentSessionCollectedUs += deltaUs;
+                        _worker.EnqueueSaveHistory(ComputeNextLaunchHistory());
+                    }
+                }
+
                 bool compress = _transport.ActiveSettings != null && _transport.ActiveSettings.Compress;
                 _worker.EnqueueClosedBatch(closedBatch, compress, _clockSource.WallUtcMs);
             }
@@ -1191,6 +1253,93 @@ namespace Asparagus.Sdk.Internal.Runtime
             {
                 _windowCoordinator.RecycleBatch(closedBatch);
             }
+        }
+
+        private void EnsureHistoryBaselineLoaded()
+        {
+            if (!_historyInitializedFromWorker && _worker.IsStartupLoadComplete)
+            {
+                CollectionHistory loaded = _worker.LoadedHistory;
+                _baseSessionsBefore = loaded.SessionsBefore;
+                _baseCollectedSecondsBefore = loaded.CollectedSecondsBefore;
+                _baseLongestSessionSecondsBefore = loaded.LongestSessionSecondsBefore;
+                _historyInitializedFromWorker = true;
+            }
+        }
+
+        private CollectionHistory GetHistoryForNextSessionStart()
+        {
+            EnsureHistoryBaselineLoaded();
+            if (_hasActiveControlPlaneSession)
+            {
+                return ComputeNextLaunchHistory();
+            }
+
+            return new CollectionHistory(
+                _baseSessionsBefore,
+                _baseCollectedSecondsBefore,
+                _baseLongestSessionSecondsBefore);
+        }
+
+        private CollectionHistory ComputeNextLaunchHistory()
+        {
+            uint nextSessions = _baseSessionsBefore < uint.MaxValue
+                ? _baseSessionsBefore + 1u
+                : uint.MaxValue;
+            ulong currentSec = _currentSessionCollectedUs > 0L
+                ? (ulong)(_currentSessionCollectedUs / 1000000L)
+                : 0UL;
+            ulong nextCollected = SaturatingAdd(_baseCollectedSecondsBefore, currentSec);
+            uint currentClamped = ClampToUInt32(currentSec);
+            uint nextLongest = currentClamped > _baseLongestSessionSecondsBefore
+                ? currentClamped
+                : _baseLongestSessionSecondsBefore;
+
+            return new CollectionHistory(nextSessions, nextCollected, nextLongest);
+        }
+
+        private void FoldCompletedControlPlaneSession(bool persistToDisk)
+        {
+            if (!_hasActiveControlPlaneSession)
+            {
+                return;
+            }
+
+            ulong sessionSec = _currentSessionCollectedUs > 0L
+                ? (ulong)(_currentSessionCollectedUs / 1000000L)
+                : 0UL;
+            if (_baseSessionsBefore < uint.MaxValue)
+            {
+                _baseSessionsBefore++;
+            }
+            _baseCollectedSecondsBefore = SaturatingAdd(_baseCollectedSecondsBefore, sessionSec);
+            uint clampedSec = ClampToUInt32(sessionSec);
+            if (clampedSec > _baseLongestSessionSecondsBefore)
+            {
+                _baseLongestSessionSecondsBefore = clampedSec;
+            }
+
+            _hasActiveControlPlaneSession = false;
+            _currentSessionCollectedUs = 0L;
+
+            if (persistToDisk)
+            {
+                _worker.EnqueueSaveHistory(new CollectionHistory(
+                    _baseSessionsBefore,
+                    _baseCollectedSecondsBefore,
+                    _baseLongestSessionSecondsBefore));
+            }
+        }
+
+        private static ulong SaturatingAdd(ulong a, ulong b)
+        {
+            ulong sum = a + b;
+            return sum < a ? ulong.MaxValue : sum;
+        }
+
+        private static uint ClampToUInt32(ulong value)
+        {
+            return value > uint.MaxValue ? uint.MaxValue : (uint)value;
         }
 
         private void StartCaptureSources(SessionSettings settings)

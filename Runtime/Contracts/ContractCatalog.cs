@@ -3,7 +3,7 @@ using System;
 namespace Asparagus.Sdk.Contracts
 {
     /// <summary>
-    /// All nine core span names defined in <c>core_events.json</c> (asparagus-contract-v5).
+    /// All ten core span names defined in <c>core_events.json</c> (asparagus-contract-v7).
     /// </summary>
     public static class CoreSpans
     {
@@ -16,6 +16,7 @@ namespace Asparagus.Sdk.Contracts
         public const string Settings = "settings";
         public const string Popup = "popup";
         public const string TutorialOrOnboarding = "tutorial_or_onboarding";
+        public const string Banner = "banner";
 
         public static readonly string[] All =
         {
@@ -27,7 +28,8 @@ namespace Asparagus.Sdk.Contracts
             Backgrounded,
             Settings,
             Popup,
-            TutorialOrOnboarding
+            TutorialOrOnboarding,
+            Banner
         };
 
         /// <summary>

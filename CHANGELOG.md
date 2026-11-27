@@ -2,6 +2,20 @@
 
 All notable changes to the Asparagus Unity SDK (`com.nx10.asparagus`) are documented in this file.
 
+## [1.1.0] - 2026-11-27
+
+### Added
+- `asparagus-contract-v6` & `asparagus-contract-v7` compliance:
+  - 10th core span `CoreSpans.Banner = "banner"` in `CoreSpans.All` (preserving `CoreSpans.AdForType("banner") == "ad_banner"`).
+  - `CollectionHistory` (`SessionStartRequest.History`, `session.proto` field 10) serialized in Protobuf JSON with `"collected_seconds_before"` as a quoted JSON string (and omitted when all fields are zero), persisted atomically off the main thread in `asparagus_history.dat` via `CollectionHistoryStore` + `AsparagusWorker`.
+  - `SessionStartResponse.SettingsLabel` (`settings_label`, `session.proto` field 13) parsed cleanly and exposed alongside `CollectionHistory` counters in `AsparagusStatusSnapshot`.
+- Hardcoded Control Plane base URL (`https://control-plane.affectstack-stage.com` -> `/routes/asparagus/sessions/start`) and 1-argument `AsparagusSDK.StartSession(apiKey)` developer entrypoint.
+
+### Changed
+- Removed obsolete `defaults.json` contract copies per Decision 159 (SDK uses built-in `SessionSettings` safety-net defaults) and updated `Contracts~/` to `asparagus-contract-v7`.
+- Updated `Samples~/StageTestHarness/AsparagusStageTestPanel.cs` to configure `_apiKey`, `_autoStartSessionOnStart`, `_demoMode`, and optional app/build overrides via Unity Inspector `[SerializeField]` fields (removing the legacy Connection Mode UI).
+- Marked `AsparagusSDK.StartSessionWithStageOverride` and `AsparagusSDK.UpdateStageToken` as `[Obsolete]`.
+
 ## [1.0.0] - 2026-11-27
 
 ### Added

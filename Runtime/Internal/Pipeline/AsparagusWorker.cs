@@ -75,6 +75,7 @@ namespace Asparagus.Sdk.Internal.Pipeline
         }
 
         private readonly DiskBatchQueue _diskQueue;
+        private readonly CollectionHistoryStore _historyStore;
         private readonly bool _runSynchronouslyForTests;
         private readonly object _sync = new object();
 
@@ -96,13 +97,23 @@ namespace Asparagus.Sdk.Internal.Pipeline
         private bool _uploadInFlight;
         private bool _canAcceptImmediateUpload;
 
+        // Off-main-thread startup load & coalesced CollectionHistory persistence
+        private bool _isStartupLoadComplete = true;
+        private CollectionHistory _loadedHistory;
+        private bool _hasPendingHistorySave;
+        private CollectionHistory _pendingHistoryToSave;
+
         private volatile bool _shutdownRequested;
         private readonly AutoResetEvent _wakeSignal;
         private readonly Thread _thread;
 
-        public AsparagusWorker(DiskBatchQueue diskQueue, bool runSynchronouslyForTests = false)
+        public AsparagusWorker(
+            DiskBatchQueue diskQueue,
+            bool runSynchronouslyForTests = false,
+            CollectionHistoryStore historyStore = null)
         {
             _diskQueue = diskQueue ?? throw new ArgumentNullException(nameof(diskQueue));
+            _historyStore = historyStore;
             _runSynchronouslyForTests = runSynchronouslyForTests;
 
             if (!_runSynchronouslyForTests)
@@ -125,6 +136,28 @@ namespace Asparagus.Sdk.Internal.Pipeline
         public bool IsRunningSynchronously
         {
             get { return _runSynchronouslyForTests; }
+        }
+
+        public bool IsStartupLoadComplete
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _isStartupLoadComplete;
+                }
+            }
+        }
+
+        public CollectionHistory LoadedHistory
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _loadedHistory;
+                }
+            }
         }
 
         public bool CanAcceptImmediateUpload
@@ -185,6 +218,7 @@ namespace Asparagus.Sdk.Internal.Pipeline
 
             lock (_sync)
             {
+                _isStartupLoadComplete = false;
                 _startupLoadQueue.Enqueue(new StartupLoadJob
                 {
                     NowUtcMs = nowUtcMs,
@@ -192,6 +226,19 @@ namespace Asparagus.Sdk.Internal.Pipeline
                     ActiveDeployment = activeDeployment,
                     ActiveSource = activeSource
                 });
+            }
+
+            SignalOrRun();
+        }
+
+        public void EnqueueSaveHistory(CollectionHistory historyForNextSession)
+        {
+            if (_shutdownRequested || _historyStore == null) return;
+
+            lock (_sync)
+            {
+                _pendingHistoryToSave = historyForNextSession;
+                _hasPendingHistorySave = true;
             }
 
             SignalOrRun();
@@ -499,10 +546,19 @@ namespace Asparagus.Sdk.Internal.Pipeline
 
         private void ProcessAllPendingJobs()
         {
-            // 1. Startup disk loads
+            // 1. Startup disk loads (disk batch queue + CollectionHistoryStore off main thread)
             while (TryDequeueStartupLoad(out StartupLoadJob loadJob))
             {
                 _diskQueue.LoadFromDisk(loadJob.NowUtcMs, loadJob.ActiveOrg, loadJob.ActiveDeployment, loadJob.ActiveSource);
+                CollectionHistory loaded = _historyStore != null ? _historyStore.LoadFromDisk() : default;
+                lock (_sync)
+                {
+                    _loadedHistory = loaded;
+                    if (_startupLoadQueue.Count == 0)
+                    {
+                        _isStartupLoadComplete = true;
+                    }
+                }
             }
 
             // 2. Scope filtering (org/deployment/source)
@@ -523,10 +579,35 @@ namespace Asparagus.Sdk.Internal.Pipeline
                 ProcessEncodeJob(in job);
             }
 
-            // 5. Prepare next upload payload off disk if requested
+            // 5. Coalesced CollectionHistory save (at most one tiny atomic write per worker cycle)
+            if (TryClaimHistorySave(out CollectionHistory historyToSave))
+            {
+                if (_historyStore != null)
+                {
+                    _historyStore.SaveToDisk(historyToSave);
+                }
+            }
+
+            // 6. Prepare next upload payload off disk if requested
             if (TryClaimPrepareRequest(out long nowUtcMs))
             {
                 ProcessPrepareUpload(nowUtcMs);
+            }
+        }
+
+        private bool TryClaimHistorySave(out CollectionHistory snapshot)
+        {
+            lock (_sync)
+            {
+                if (!_hasPendingHistorySave)
+                {
+                    snapshot = default;
+                    return false;
+                }
+
+                snapshot = _pendingHistoryToSave;
+                _hasPendingHistorySave = false;
+                return true;
             }
         }
 

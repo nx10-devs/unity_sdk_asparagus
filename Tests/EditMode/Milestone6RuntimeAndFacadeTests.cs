@@ -831,5 +831,162 @@ namespace Asparagus.Sdk.Tests
                 Assert.AreEqual(LifecycleKind.Resumed, postAdFg.Lifecycle[0].Kind);
             }
         }
+
+        // ====================================================================
+        // 7. v7 CollectionHistory Cross-Launch Persistence, Retries, SettingsLabel & 1-Arg StartSession
+        // ====================================================================
+
+        [Test]
+        public void Runtime_CollectionHistory_PersistsAcrossLaunches_IgnoresRetries_AndUsesHardcodedEndpoint()
+        {
+            long baseUtcMs = 1794736860000L;
+
+            // --- Launch #1: 503 retry does NOT increment history; collects 20s across 2 batches ---
+            FakeClock clock1 = new FakeClock { SteadyTimeUs = 0L, UnityTimeUs = 100000L, WallUtcMs = baseUtcMs };
+            MockHttpTransport http1 = new MockHttpTransport();
+            using (AsparagusRuntime rt1 = CreateRuntime(clock1, http1, new FakeMotionSource(), new FakeTouchSource()))
+            {
+                http1.EnqueueResponse(503L);
+                http1.EnqueueJson(200L, @"{
+                    ""status"": ""success"",
+                    ""data"": {
+                        ""id_org"": ""org-h"", ""id_deployment"": ""dep-h"", ""id_source"": ""src-h"", ""id_session"": ""ses-h1"",
+                        ""token"": ""tok-h1"", ""token_expires_utc_ms"": """ + (baseUtcMs + 86400000L) + @""", ""server_utc_ms"": """ + baseUtcMs + @""",
+                        ""batch_endpoint"": ""https://intake.stage/asparagus/v1/batches"",
+                        ""settings_label"": ""share-alpha"",
+                        ""settings"": { ""batch_length_s"": 10, ""compress"": true }
+                    }
+                }");
+
+                // 1-argument StartSession(apiKey) MUST hit the hardcoded stage Control Plane URL!
+                Assert.IsTrue(rt1.StartSession("test-key-v7"));
+                Assert.AreEqual(1, http1.Calls.Count);
+                Assert.AreEqual(
+                    "https://control-plane.affectstack-stage.com/routes/asparagus/sessions/start",
+                    http1.Calls[0].Spec.Url);
+                string req1Json = System.Text.Encoding.UTF8.GetString(http1.Calls[0].BodyCopy);
+                StringAssert.DoesNotContain("\"history\"", req1Json, "First launch must omit zero history");
+
+                // Retry after 503 backoff -> still zero history (503 never started a session!)
+                clock1.SteadyTimeUs += 2500000L;
+                clock1.UnityTimeUs += 2500000L;
+                rt1.Tick();
+                Assert.AreEqual(2, http1.Calls.Count);
+                string retryJson = System.Text.Encoding.UTF8.GetString(http1.Calls[1].BodyCopy);
+                StringAssert.DoesNotContain("\"history\"", retryJson, "Retry after 503 must keep history unchanged");
+
+                AsparagusStatusSnapshot snap1 = rt1.GetStatusSnapshot();
+                Assert.AreEqual("share-alpha", snap1.SettingsLabel);
+                Assert.AreEqual(0u, snap1.HistorySessionsBefore);
+
+                // Collect 2 full 10s batches (20s total)
+                http1.EnqueueResponse(200L, new byte[] { 0x08, 0x01 });
+                clock1.SteadyTimeUs += 10000000L;
+                clock1.UnityTimeUs += 10000000L;
+                rt1.Tick();
+
+                http1.EnqueueResponse(200L, new byte[] { 0x08, 0x01 });
+                clock1.SteadyTimeUs += 10000000L;
+                clock1.UnityTimeUs += 10000000L;
+                rt1.Tick();
+            }
+
+            // --- Launch #2: loads (1, 20, 20) from disk, collects 12s, StopSession->StartSession, then long pause -> non-collecting share ---
+            FakeClock clock2 = new FakeClock { SteadyTimeUs = 0L, UnityTimeUs = 100000L, WallUtcMs = baseUtcMs + 60000L };
+            MockHttpTransport http2 = new MockHttpTransport();
+            using (AsparagusRuntime rt2 = CreateRuntime(clock2, http2, new FakeMotionSource(), new FakeTouchSource()))
+            {
+                http2.EnqueueJson(200L, MakeSessionStartSuccessJson("ses-h2", "tok-h2", clock2.WallUtcMs, newSessionAfterS: 1800u));
+                Assert.IsTrue(rt2.StartSession("test-key-v7"));
+
+                string req2Json = System.Text.Encoding.UTF8.GetString(http2.Calls[0].BodyCopy);
+                StringAssert.Contains("\"history\":{\"sessions_before\":1,\"collected_seconds_before\":\"20\",\"longest_session_seconds_before\":20}", req2Json);
+
+                // Collect 12s (10s window + 2s final window on StopSession -> 12s < longest 20s)
+                http2.EnqueueResponse(200L, new byte[] { 0x08, 0x01 });
+                clock2.SteadyTimeUs += 10000000L;
+                clock2.UnityTimeUs += 10000000L;
+                rt2.Tick();
+
+                clock2.SteadyTimeUs += 2000000L;
+                clock2.UnityTimeUs += 2000000L;
+                rt2.StopSession();
+
+                // In-process StartSession -> sends (2, 32, 20)
+                http2.EnqueueJson(200L, MakeSessionStartSuccessJson("ses-h3", "tok-h3", clock2.WallUtcMs + 12000L, newSessionAfterS: 1800u));
+                Assert.IsTrue(rt2.StartSession("test-key-v7"));
+                string req3Json = System.Text.Encoding.UTF8.GetString(http2.Calls[http2.Calls.Count - 1].BodyCopy);
+                StringAssert.Contains("\"history\":{\"sessions_before\":2,\"collected_seconds_before\":\"32\",\"longest_session_seconds_before\":20}", req3Json);
+
+                // Collect 30s (3 x 10s -> new longest = 30s!) then pause > 1800s -> auto-starts non-collecting holdout share
+                for (int w = 0; w < 3; w++)
+                {
+                    http2.EnqueueResponse(200L, new byte[] { 0x08, 0x01 });
+                    clock2.SteadyTimeUs += 10000000L;
+                    clock2.UnityTimeUs += 10000000L;
+                    rt2.Tick();
+                }
+
+                rt2.OnApplicationPause(true);
+                clock2.WallUtcMs += 1805000L;
+                clock2.SteadyTimeUs += 1805000000L;
+                clock2.UnityTimeUs += 1805000000L;
+
+                // Non-collecting holdout share with omitted "settings" and settings_label = "holdout-zero"
+                http2.EnqueueJson(200L, @"{
+                    ""status"": ""success"",
+                    ""data"": {
+                        ""id_org"": ""org-h"", ""id_deployment"": ""dep-h"", ""id_source"": ""src-h"", ""id_session"": ""ses-h4"",
+                        ""token"": ""tok-h4"", ""server_utc_ms"": """ + clock2.WallUtcMs + @""",
+                        ""batch_endpoint"": """",
+                        ""settings_label"": ""holdout-zero""
+                    }
+                }");
+                rt2.OnApplicationPause(false);
+
+                string req4Json = System.Text.Encoding.UTF8.GetString(http2.Calls[http2.Calls.Count - 1].BodyCopy);
+                StringAssert.Contains("\"history\":{\"sessions_before\":3,\"collected_seconds_before\":\"62\",\"longest_session_seconds_before\":30}", req4Json);
+                AsparagusStatusSnapshot holdoutSnap = rt2.GetStatusSnapshot();
+                Assert.IsFalse(holdoutSnap.IsCollecting);
+                Assert.AreEqual("holdout-zero", holdoutSnap.SettingsLabel);
+                Assert.AreEqual(3u, holdoutSnap.HistorySessionsBefore);
+                Assert.AreEqual(62UL, holdoutSnap.HistoryCollectedSecondsBefore);
+                Assert.AreEqual(30u, holdoutSnap.HistoryLongestSessionSecondsBefore);
+            }
+
+            // --- Launch #3 (real background worker thread!): verifies deferred StartSession loads (4, 62, 30) off main thread ---
+            FakeClock clock3 = new FakeClock { SteadyTimeUs = 0L, UnityTimeUs = 100000L, WallUtcMs = baseUtcMs + 2000000L };
+            MockHttpTransport http3 = new MockHttpTransport();
+            using (AsparagusRuntime rt3 = new AsparagusRuntime(new AsparagusRuntimeOptions
+            {
+                SdkVersion = new SdkVersion(1, 1, 0),
+                StorageBaseDirectory = _tempDir,
+                ClockSource = clock3,
+                HttpTransport = http3,
+                MotionSource = new FakeMotionSource(),
+                TouchSource = new FakeTouchSource(),
+                ScreenInfoProvider = new FakeScreenProvider(),
+                SystemStateProvider = new FakeSystemStateProvider(),
+                DeviceMetadataProvider = new FakeDeviceMetadataProvider(),
+                RetryPolicy = new RetryBackoffPolicy(() => 0.0),
+                RunWorkerSynchronouslyForTests = false,
+                AutoLoadDiskQueueOnStart = true
+            }))
+            {
+                http3.EnqueueJson(200L, MakeSessionStartSuccessJson("ses-h5", "tok-h5", clock3.WallUtcMs));
+                Assert.IsTrue(rt3.StartSession("test-key-v7"));
+
+                long deadline = Environment.TickCount + 3000;
+                while (http3.Calls.Count == 0 && Environment.TickCount < deadline)
+                {
+                    rt3.Tick();
+                    System.Threading.Thread.Sleep(10);
+                }
+
+                Assert.AreEqual(1, http3.Calls.Count, "Deferred StartSession must dispatch once background worker finishes startup load");
+                string req5Json = System.Text.Encoding.UTF8.GetString(http3.Calls[0].BodyCopy);
+                StringAssert.Contains("\"history\":{\"sessions_before\":4,\"collected_seconds_before\":\"62\",\"longest_session_seconds_before\":30}", req5Json);
+            }
+        }
     }
 }
