@@ -1,0 +1,3 @@
+<linker>
+    <assembly fullname="Asparagus.Sdk" preserve="all"/>
+</linker>

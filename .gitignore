@@ -1,0 +1,17 @@
+# OS & IDE files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vs/
+.idea/
+.vscode/
+
+# Temp, build artifacts & local secrets (NEVER ignore *.meta in a UPM package!)
+*.tmp
+*.pdb
+*.class
+*.dll
+.env
+*.env
+*.binpb
+*.binpb.gz

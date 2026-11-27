@@ -1,0 +1,569 @@
+// The asparagus batch contract.
+//
+// One upload from the asparagus SDK holds everything a device recorded in one
+// window of about ten seconds. The SDK sends a Batch, gzipped unless the
+// settings switch that off. The intake, which is the service at
+// batch_endpoint, answers with an UploadResponse. How the upload is made, and
+// what each answer means, is in session.proto, at batch_endpoint.
+//
+// Schema number: 3
+//
+// From the tag asparagus-contract-v1 on, this file changes by adding only.
+// A field is never removed, renamed, renumbered, given a new type or given a
+// new meaning. Every change raises the schema number above, and every batch
+// carries the number its SDK was built with.
+//
+// A reader ignores a field that it does not know, and keeps an enum number
+// that it does not know.
+//
+// Times are in microseconds unless a name says otherwise. Each time is on the
+// clock that produced it. The header holds one reading of every clock, taken
+// together, so that the server can put everything on one timeline.
+//
+// Whole numbers that come in runs, such as samples, are stored as a first
+// value and then the difference from the value before.
+//
+// Every text is valid UTF-8. A limit on the length of a text never cuts a
+// character in two.
+
+syntax = "proto3";
+
+package asparagus_contract.v1;
+
+// Everything one device recorded in one window.
+message Batch {
+  Header header = 1;
+  repeated SensorBlock sensor_blocks = 2;
+  Touch touch = 3;
+  repeated GameEvent events = 4;
+  repeated StateRecord state_records = 5;
+  repeated LifecycleRecord lifecycle = 6;
+  repeated GapRecord gaps = 7;
+  // The screen is in the header. These are the changes inside the window.
+  repeated ScreenRecord screen_changes = 8;
+  repeated Diagnostic diagnostics = 9;
+  // What was true as the window opened, so that the collector needs no other
+  // batch to read this one.
+  Carried carried = 10;
+}
+
+message Header {
+  // The four ids, under the names the rest of the stack uses. The intake
+  // checks the organisation, the deployment and the device against the token.
+  // No id is empty, and none is longer than 1,024 bytes as UTF-8: the intake
+  // refuses a batch that breaks either rule, and the SDK then drops it.
+  string id_org = 1;
+  string id_deployment = 2;
+  // The device.
+  string id_source = 3;
+  // The session that recorded the batch. A batch left over from an earlier
+  // session keeps that session's id, whichever token it is uploaded under.
+  string id_session = 4;
+  // Counts the batches of one session, from 1, in time order.
+  uint64 sequence = 5;
+  // The schema number of this file that the SDK was built with.
+  uint32 schema_version = 6;
+  SdkVersion sdk_version = 7;
+  Platform platform = 8;
+  // The OS version, the device model and the settings version are at most
+  // 1,024 bytes each as UTF-8: the intake refuses a batch with a longer one.
+  string os_version = 9;
+  string device_model = 10;
+  // The version of the settings the batch was captured under.
+  string settings_version = 11;
+
+  // The window, on the session clock. It starts on a whole second. Windows
+  // are counted from the session's own first second.
+  sint64 window_start_us = 12;
+  uint32 window_length_s = 13;
+  // When the batch closed, on the session clock. For a full window this is
+  // the start plus the length.
+  sint64 closed_us = 14;
+  CloseReason close_reason = 15;
+
+  // One reading of every clock, taken together as the window opened.
+  ClockReading clocks = 16;
+  // The last server time the SDK saw. The session clock was set from it.
+  ServerAnchor server_anchor = 17;
+
+  // The screen as the window opened.
+  ScreenRecord screen = 18;
+  bool has_gyroscope = 19;
+  // Batches dropped from the phone's queue since the last upload that got
+  // through. A gap record covers them.
+  uint32 batches_dropped = 20;
+  // The phone's offset from UTC as the window opened, in minutes: what is
+  // added to UTC to give the phone's local time. East of Greenwich it is
+  // above zero. Absent when the sender does not say.
+  optional sint32 utc_offset_minutes = 21;
+}
+
+message SdkVersion {
+  uint32 major = 1;
+  uint32 minor = 2;
+  uint32 patch = 3;
+}
+
+enum Platform {
+  PLATFORM_UNSPECIFIED = 0;
+  PLATFORM_ANDROID = 1;
+  PLATFORM_IOS = 2;
+  PLATFORM_EDITOR = 3;
+  PLATFORM_OTHER = 4;
+}
+
+enum CloseReason {
+  CLOSE_REASON_UNSPECIFIED = 0;
+  CLOSE_REASON_WINDOW_FULL = 1;
+  CLOSE_REASON_PAUSED = 2;
+  CLOSE_REASON_QUIT = 3;
+  CLOSE_REASON_CAPTURE_STOPPED = 4;
+  CLOSE_REASON_SESSION_ENDED = 5;
+}
+
+enum Clock {
+  CLOCK_UNSPECIFIED = 0;
+  // The session clock: the server's time at session start, carried forward by
+  // the phone's steady clock. It never moves during a session, except by whole
+  // seconds on a return from the background.
+  CLOCK_SESSION = 1;
+  // Unity's event clock, which runs from app start.
+  CLOCK_UNITY = 2;
+  // The phone's sensor clock.
+  CLOCK_SENSOR = 3;
+}
+
+message ClockReading {
+  // Microseconds since the start of 1970, on the session clock.
+  sint64 session_us = 1;
+  sint64 unity_us = 2;
+  // Absent when no native source is running.
+  optional sint64 sensor_us = 3;
+  // The phone's own idea of the time, in milliseconds since the start of 1970.
+  sint64 wall_utc_ms = 4;
+}
+
+message ServerAnchor {
+  // The server's time, in milliseconds since the start of 1970.
+  sint64 server_utc_ms = 1;
+  // The clocks, read when that answer arrived.
+  ClockReading at_receipt = 2;
+  // How long the request took. It bounds the error.
+  uint32 round_trip_ms = 3;
+}
+
+enum Sensor {
+  SENSOR_UNSPECIFIED = 0;
+  SENSOR_ACCELEROMETER = 1;
+  SENSOR_GYROSCOPE = 2;
+  SENSOR_GRAVITY = 3;
+  // The magnetic field at the phone, in microtesla, on the phone's own three
+  // axes, as the platform reports it. Nothing is converted on the phone. The
+  // backend stores its samples raw, and does not score them yet.
+  SENSOR_MAGNETOMETER = 4;
+}
+
+enum CaptureSource {
+  CAPTURE_SOURCE_UNSPECIFIED = 0;
+  CAPTURE_SOURCE_NATIVE_ANDROID = 1;
+  CAPTURE_SOURCE_NATIVE_IOS = 2;
+  // Unity's Input System: every event, with its own time.
+  CAPTURE_SOURCE_UNITY_EVENTS = 3;
+  // Unity's old input manager, read once per frame.
+  CAPTURE_SOURCE_UNITY_POLLED = 4;
+}
+
+enum FallbackReason {
+  FALLBACK_REASON_UNSPECIFIED = 0;
+  FALLBACK_REASON_PLUGIN_MISSING = 1;
+  FALLBACK_REASON_SENSOR_REFUSED = 2;
+  FALLBACK_REASON_NO_FIRST_SAMPLE = 3;
+  FALLBACK_REASON_SAMPLES_STOPPED = 4;
+  FALLBACK_REASON_NATIVE_ERROR = 5;
+  FALLBACK_REASON_FORCED_BY_SETTINGS = 6;
+}
+
+enum ValueUnit {
+  VALUE_UNIT_UNSPECIFIED = 0;
+  VALUE_UNIT_METRES_PER_SECOND_SQUARED = 1;
+  VALUE_UNIT_G = 2;
+  VALUE_UNIT_RADIANS_PER_SECOND = 3;
+  // Microtesla, the unit of a magnetic field.
+  VALUE_UNIT_MICROTESLA = 4;
+}
+
+// One unbroken run of samples: one sensor, one source, one clock, one unit
+// and one scale. A change in any of them starts a new block. A gap does not:
+// the gap record says where it was.
+message SensorBlock {
+  Sensor sensor = 1;
+  CaptureSource source = 2;
+  // Set when the source is the fallback.
+  FallbackReason fallback_reason = 3;
+  // The clock that stamped these samples.
+  Clock clock = 4;
+  // The unit the phone reported. The server converts.
+  ValueUnit unit = 5;
+  // One whole number stands for this much of the unit.
+  double scale = 6;
+  // The rate asked for, in samples a second. Zero when the sender does not
+  // state it. The rule for a gap counts sample periods at this rate, and with
+  // no rate only its milliseconds decide.
+  float requested_hz = 7;
+  // The samples the sensor delivered for this block, held ones included.
+  uint32 sample_count = 8;
+  // The longest time between two samples that the sensor delivered one after
+  // the other in this block, held ones included.
+  uint32 longest_gap_us = 9;
+
+  // The time of the first sample that is sent in full. Left at zero when the
+  // block holds no such sample: its holds carry their own times.
+  sint64 first_time_us = 10;
+  // The time from each sample to the next. One entry fewer than x, y and z.
+  repeated sint32 time_steps_us = 11;
+  // One entry for each sample sent in full: the first value, then the
+  // difference from the sample sent in full before it. A hold in between
+  // does not change what the next difference is taken from.
+  repeated sint32 x = 12;
+  repeated sint32 y = 13;
+  repeated sint32 z = 14;
+
+  // Stretches where the signal did not change. Their samples are not in x, y
+  // and z.
+  repeated Hold holds = 15;
+}
+
+// A stretch where the signal did not change. A hold never runs across a gap:
+// a silence that is recorded as a gap ends the hold at the last sample before
+// it, and the first sample after it starts anew.
+message Hold {
+  // The times of the first and the last held sample, on the block's clock.
+  sint64 start_time_us = 1;
+  sint64 end_time_us = 2;
+  // How many samples the stretch stands for.
+  uint32 sample_count = 3;
+  // The held value, on the block's scale: the first sample of the stretch,
+  // which the samples after it were compared with.
+  sint32 x = 4;
+  sint32 y = 5;
+  sint32 z = 6;
+  // Present only when the hold tolerance is above zero, so that the samples
+  // may differ a little. One entry for each axis, in the order x, y, z.
+  repeated HoldStats stats = 7;
+}
+
+// What the held samples added up to, for one axis or one quantity, on its
+// own scale.
+message HoldStats {
+  sint64 sum = 1;
+  double sum_of_squares = 2;
+  sint32 minimum = 3;
+  sint32 maximum = 4;
+}
+
+enum TouchMode {
+  TOUCH_MODE_UNSPECIFIED = 0;
+  // The Input System, with Unity's merging of move events off.
+  TOUCH_MODE_EVENTS = 1;
+  // The Input System, with merging on: about one sample per finger per frame.
+  TOUCH_MODE_EVENTS_MERGED = 2;
+  // The old input manager, read once per frame.
+  TOUCH_MODE_POLLED = 3;
+}
+
+message Touch {
+  // The mode the SDK found. It never changes the game's setting.
+  TouchMode mode = 1;
+  // The most samples kept per finger per second. Zero keeps every event.
+  float requested_hz = 2;
+  // One whole number stands for this much: of a pixel, of the size the phone
+  // reports, and of the pressure it reports.
+  double position_scale = 3;
+  double size_scale = 4;
+  double pressure_scale = 5;
+  repeated TouchContact contacts = 6;
+}
+
+enum TouchEnd {
+  TOUCH_END_UNSPECIFIED = 0;
+  // The finger was still down when the window closed.
+  TOUCH_END_STILL_DOWN = 1;
+  TOUCH_END_LIFTED = 2;
+  TOUCH_END_CANCELLED = 3;
+}
+
+// One finger, from the time it came down, or from the start of the window.
+message TouchContact {
+  uint32 finger_id = 1;
+  // True when the finger was already down before this window.
+  bool continued = 2;
+  TouchEnd end = 3;
+  // The time of the first sample that is sent in full, on Unity's event
+  // clock. A contact that opens with a resting finger opens with a hold,
+  // which carries its own times. Left at zero when the contact holds no
+  // sample sent in full.
+  sint64 first_time_us = 4;
+  // The time from each sample to the next. One entry fewer than x and y.
+  repeated sint32 time_steps_us = 5;
+  // Raw pixels on the position scale: the first value, then the difference
+  // from the sample sent in full before it.
+  repeated sint32 x = 6;
+  repeated sint32 y = 7;
+  // Contact size on both axes, as the phone reports it, on the size scale.
+  repeated sint32 size_major = 8;
+  repeated sint32 size_minor = 9;
+  // Empty when the phone reports no pressure.
+  repeated sint32 pressure = 10;
+  // Stretches where the finger rested.
+  repeated TouchHold holds = 11;
+  // The events the game's input delivered for this finger in the window,
+  // before the SDK thinned them to the requested rate.
+  uint32 events_seen = 12;
+  // What the contact did before this window. Present only for a contact
+  // that continues from the window before, from a sender that carries it.
+  ContactBefore before = 13;
+}
+
+// What a contact did before this window. Present only for a contact that
+// continues from the window before, from a sender that carries it.
+message ContactBefore {
+  // When the finger came down, on Unity's event clock.
+  sint64 down_time_us = 1;
+  // The least and the most of x and of y over every sample of the contact
+  // before this window: raw pixels on the position scale, as whole numbers
+  // and not as differences.
+  sint32 min_x = 2;
+  sint32 max_x = 3;
+  sint32 min_y = 4;
+  sint32 max_y = 5;
+}
+
+// A stretch where a finger rested. Like a sensor's hold, it never runs across
+// a gap.
+message TouchHold {
+  // The times of the first and the last held sample, on Unity's event clock.
+  sint64 start_time_us = 1;
+  sint64 end_time_us = 2;
+  // How many samples the stretch stands for.
+  uint32 sample_count = 3;
+  // The held value: the first sample of the stretch.
+  sint32 x = 4;
+  sint32 y = 5;
+  sint32 size_major = 6;
+  sint32 size_minor = 7;
+  sint32 pressure = 8;
+  // Present only when the hold tolerance is above zero. One entry for each
+  // of x, y, size_major and size_minor, in that order, and a fifth for
+  // pressure when the phone reports it.
+  repeated HoldStats stats = 9;
+}
+
+enum Orientation {
+  ORIENTATION_UNSPECIFIED = 0;
+  ORIENTATION_PORTRAIT = 1;
+  ORIENTATION_PORTRAIT_UPSIDE_DOWN = 2;
+  ORIENTATION_LANDSCAPE_LEFT = 3;
+  ORIENTATION_LANDSCAPE_RIGHT = 4;
+}
+
+enum CoordinateOrigin {
+  COORDINATE_ORIGIN_UNSPECIFIED = 0;
+  COORDINATE_ORIGIN_BOTTOM_LEFT = 1;
+  COORDINATE_ORIGIN_TOP_LEFT = 2;
+}
+
+message ScreenRecord {
+  // On Unity's event clock. Zero in the header, where the screen is the one
+  // the window opened with.
+  sint64 time_us = 1;
+  uint32 width_px = 2;
+  uint32 height_px = 3;
+  float density_dpi = 4;
+  Orientation orientation = 5;
+  // Where touch coordinates start.
+  CoordinateOrigin origin = 6;
+}
+
+// Text, a number, or true or false. With nothing set it is empty.
+message Value {
+  oneof kind {
+    string text = 1;
+    double number = 2;
+    bool flag = 3;
+  }
+}
+
+enum SpanMarker {
+  // The event opens and closes no span, or the sender does not mark spans.
+  SPAN_MARKER_UNSPECIFIED = 0;
+  SPAN_MARKER_OPEN = 1;
+  SPAN_MARKER_CLOSE = 2;
+}
+
+message GameEvent {
+  // On Unity's event clock.
+  sint64 time_us = 1;
+  // The name as the game sent it.
+  string name = 2;
+  map<string, Value> fields = 3;
+  optional string outcome = 4;
+  // Empty when the event is part of no span.
+  string span_name = 5;
+  SpanMarker span_marker = 6;
+  // The number of the span this event opens or closes. Zero when it does
+  // neither, and for a close that finds no span open.
+  uint32 span_number = 7;
+  // Counts the calls in this window, events and state changes together, from
+  // 1: the game's calls, and the SDK's own changes of the state. It settles
+  // the order when two records carry the same time.
+  uint32 order = 8;
+}
+
+enum StateKind {
+  STATE_KIND_UNSPECIFIED = 0;
+  // Replaces the whole set.
+  STATE_KIND_PUT = 1;
+  // Changes only the keys it names.
+  STATE_KIND_PATCH = 2;
+}
+
+// One change the game made to its state.
+message StateRecord {
+  // On Unity's event clock.
+  sint64 time_us = 1;
+  StateKind kind = 2;
+  map<string, Value> values = 3;
+  // The keys a patch removes.
+  repeated string removed_keys = 4;
+  // Counts the calls in this window, events and state changes together, from
+  // 1: the game's calls, and the SDK's own changes of the state.
+  uint32 order = 5;
+  // The state's version once this change is applied.
+  uint32 version = 6;
+}
+
+// What was true as the window opened. A sender that tracks none of it leaves
+// the whole of it out of the batch, and the rows then say that they carry
+// none. A sender that tracks any of it tracks the time of the last event too.
+message Carried {
+  // The game's whole state. Present and empty means that the state is empty.
+  // Absent means that the sender does not keep the state.
+  State state = 1;
+  // The spans that were open. Present and empty means that none was open.
+  // Absent means that the sender does not track spans.
+  OpenSpans open_spans = 2;
+  // The time of the last game event before the window, on Unity's event
+  // clock. Absent means that the session has had no event yet.
+  optional sint64 last_event_time_us = 3;
+}
+
+message State {
+  map<string, Value> values = 1;
+  // Counts the changes to the state in this session.
+  uint32 version = 2;
+}
+
+message OpenSpans {
+  repeated OpenSpan spans = 1;
+}
+
+message OpenSpan {
+  // The name as the game sent it.
+  string name = 1;
+  // Counts the spans of this session, from 1, in the order they opened.
+  uint32 number = 2;
+  // On Unity's event clock.
+  sint64 opened_time_us = 3;
+}
+
+enum LifecycleKind {
+  LIFECYCLE_KIND_UNSPECIFIED = 0;
+  LIFECYCLE_KIND_PAUSED = 1;
+  LIFECYCLE_KIND_RESUMED = 2;
+  LIFECYCLE_KIND_FOCUS_LOST = 3;
+  LIFECYCLE_KIND_FOCUS_GAINED = 4;
+  LIFECYCLE_KIND_QUITTING = 5;
+  LIFECYCLE_KIND_CAPTURE_STOPPED_BY_GAME = 6;
+  LIFECYCLE_KIND_CAPTURE_STARTED_BY_GAME = 7;
+  // The session clock was moved by whole seconds, on a return from the
+  // background. The record's time is the moment of the move, and the record
+  // sits in the first batch that closes after it.
+  LIFECYCLE_KIND_CLOCK_STEPPED = 8;
+}
+
+message LifecycleRecord {
+  // On Unity's event clock.
+  sint64 time_us = 1;
+  LifecycleKind kind = 2;
+  // With CLOCK_STEPPED: how far the session clock moved, in whole seconds.
+  sint64 clock_step_s = 3;
+}
+
+enum GapSignal {
+  GAP_SIGNAL_UNSPECIFIED = 0;
+  GAP_SIGNAL_ACCELEROMETER = 1;
+  GAP_SIGNAL_GYROSCOPE = 2;
+  GAP_SIGNAL_GRAVITY = 3;
+  GAP_SIGNAL_TOUCH = 4;
+  GAP_SIGNAL_EVERYTHING = 5;
+  // A silence of the magnetometer.
+  GAP_SIGNAL_MAGNETOMETER = 6;
+}
+
+// What the SDK saw. The server works out the reason, such as an ad or the
+// background.
+enum GapCause {
+  GAP_CAUSE_UNSPECIFIED = 0;
+  GAP_CAUSE_SENSOR_SILENT = 1;
+  GAP_CAUSE_BUFFER_OVERFLOWED = 2;
+  GAP_CAUSE_BATCHES_DROPPED = 3;
+  GAP_CAUSE_CAPTURE_STOPPED = 4;
+}
+
+// A stretch with no data.
+message GapRecord {
+  GapSignal signal = 1;
+  // The clock the two times are on.
+  Clock clock = 2;
+  sint64 start_time_us = 3;
+  sint64 end_time_us = 4;
+  GapCause cause = 5;
+  // With BATCHES_DROPPED: how many, and the sequence number of the first.
+  uint32 batches_dropped = 6;
+  uint64 first_dropped_sequence = 7;
+}
+
+enum Severity {
+  SEVERITY_UNSPECIFIED = 0;
+  SEVERITY_WARNING = 1;
+  SEVERITY_ERROR = 2;
+}
+
+// One of the SDK's own errors or warnings. Never anything about the player.
+message Diagnostic {
+  // On Unity's event clock.
+  sint64 time_us = 1;
+  Severity severity = 2;
+  // A short fixed name for the kind of fault.
+  string code = 3;
+  string detail = 4;
+  // How many times it happened in this window.
+  uint32 count = 5;
+}
+
+enum UploadStatus {
+  UPLOAD_STATUS_UNSPECIFIED = 0;
+  UPLOAD_STATUS_STORED = 1;
+}
+
+// The intake's answer. It is an acknowledgement, and nothing else: a 2xx
+// answer means that the intake's queue holds the batch. The SDK ignores
+// any field it does not know, so that more can be added later.
+//
+// The status is named STORED for that. It is no promise that the
+// collector stores the batch: a batch that the collector refuses behind
+// the queue is lost as one that got a 400 is, and no answer reaches the
+// SDK.
+message UploadResponse {
+  UploadStatus status = 1;
+}

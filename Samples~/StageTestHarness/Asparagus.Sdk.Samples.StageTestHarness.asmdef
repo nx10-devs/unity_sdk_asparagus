@@ -1,0 +1,17 @@
+{
+    "name": "Asparagus.Sdk.Samples.StageTestHarness",
+    "rootNamespace": "Asparagus.Sdk.Samples",
+    "references": [
+        "GUID:48c140062cb74004b910e4db1ca6d62f",
+        "GUID:75469ad4d38634e559750d17036d5f7c"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

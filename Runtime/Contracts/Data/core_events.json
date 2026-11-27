@@ -1,0 +1,560 @@
+{
+  "events": [
+    {
+      "name": "game_level_started",
+      "meaning": "An attempt at a level starts.",
+      "span": "level",
+      "role": "OPENS",
+      "carries_outcome": false,
+      "fields": [
+        {
+          "key": "level",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The level's id, as the game names it.",
+          "values": []
+        },
+        {
+          "key": "attempt_number",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "Which attempt at this level this is, counted from 1.",
+          "values": []
+        },
+        {
+          "key": "difficulty",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "How hard the level is, on the game's own scale. Higher is harder.",
+          "values": []
+        }
+      ]
+    },
+    {
+      "name": "game_level_succeeded",
+      "meaning": "An attempt at a level ends, and the player has succeeded.",
+      "span": "level",
+      "role": "CLOSES",
+      "carries_outcome": false,
+      "fields": [
+        {
+          "key": "level",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The level's id.",
+          "values": []
+        },
+        {
+          "key": "score",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "The score.",
+          "values": []
+        },
+        {
+          "key": "duration",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "The seconds the attempt took, as the game counts them.",
+          "values": []
+        },
+        {
+          "key": "attempt_number",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "Which attempt this was.",
+          "values": []
+        }
+      ]
+    },
+    {
+      "name": "game_level_failed",
+      "meaning": "An attempt at a level ends, and the player has failed.",
+      "span": "level",
+      "role": "CLOSES",
+      "carries_outcome": false,
+      "fields": [
+        {
+          "key": "level",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The level's id.",
+          "values": []
+        },
+        {
+          "key": "score",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "The score.",
+          "values": []
+        },
+        {
+          "key": "duration",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "The seconds the attempt took, as the game counts them.",
+          "values": []
+        },
+        {
+          "key": "attempt_number",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "Which attempt this was.",
+          "values": []
+        }
+      ]
+    },
+    {
+      "name": "ad_started",
+      "meaning": "An ad starts to show.",
+      "span": "ad",
+      "role": "OPENS",
+      "carries_outcome": false,
+      "fields": [
+        {
+          "key": "type",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The kind of ad.",
+          "values": ["banner", "interstitial", "rewarded", "app_start"]
+        },
+        {
+          "key": "placement",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "Where in the game the ad is shown.",
+          "values": []
+        },
+        {
+          "key": "ads_in_set",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "How many ads are shown one after another.",
+          "values": []
+        },
+        {
+          "key": "ad_number",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "Which ad of the set this one is, counted from 1.",
+          "values": []
+        }
+      ]
+    },
+    {
+      "name": "ad_finished",
+      "meaning": "An ad stops showing.",
+      "span": "ad",
+      "role": "CLOSES",
+      "carries_outcome": false,
+      "fields": [
+        {
+          "key": "type",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The kind of ad.",
+          "values": ["banner", "interstitial", "rewarded", "app_start"]
+        },
+        {
+          "key": "placement",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "Where in the game the ad is shown.",
+          "values": []
+        },
+        {
+          "key": "ads_in_set",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "How many ads are shown one after another.",
+          "values": []
+        },
+        {
+          "key": "ad_number",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "Which ad of the set this one is, counted from 1.",
+          "values": []
+        },
+        {
+          "key": "completed",
+          "type": "FLAG",
+          "expected": false,
+          "meaning": "True when the ad was watched to its end.",
+          "values": []
+        }
+      ]
+    },
+    {
+      "name": "ad_revenue",
+      "meaning": "What an ad earned, or that it earned nothing.",
+      "span": null,
+      "role": "NONE",
+      "carries_outcome": true,
+      "fields": [
+        {
+          "key": "type",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The kind of ad.",
+          "values": ["banner", "interstitial", "rewarded", "app_start"]
+        },
+        {
+          "key": "network",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The ad network.",
+          "values": []
+        },
+        {
+          "key": "amount",
+          "type": "NUMBER",
+          "expected": true,
+          "meaning": "What the ad earned. Zero when it earned nothing.",
+          "values": []
+        },
+        {
+          "key": "currency",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The currency of the amount.",
+          "values": []
+        },
+        {
+          "key": "reason",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "What happened to the ad.",
+          "values": [
+            "ad_displayed",
+            "rewarded_declined",
+            "ad_blocked",
+            "ad_failed_to_display",
+            "app_closed"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "in_app_purchase",
+      "meaning": "A purchase is made, or one fails or is cancelled.",
+      "span": null,
+      "role": "NONE",
+      "carries_outcome": true,
+      "fields": [
+        {
+          "key": "product",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The product's id.",
+          "values": []
+        },
+        {
+          "key": "price",
+          "type": "NUMBER",
+          "expected": true,
+          "meaning": "The price.",
+          "values": []
+        },
+        {
+          "key": "currency",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The currency of the price.",
+          "values": []
+        },
+        {
+          "key": "reason",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "What happened to the purchase.",
+          "values": ["purchase_completed", "purchase_failed", "user_cancelled"]
+        },
+        {
+          "key": "quantity",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "How many were bought.",
+          "values": []
+        },
+        {
+          "key": "transaction_id",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The store's id for the purchase.",
+          "values": []
+        }
+      ]
+    },
+    {
+      "name": "in_app_purchase_view_opened",
+      "meaning": "A screen that offers a purchase opens.",
+      "span": "purchase_view",
+      "role": "OPENS",
+      "carries_outcome": false,
+      "fields": [
+        {
+          "key": "type",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The kind of screen.",
+          "values": ["shop", "no_ads"]
+        },
+        {
+          "key": "product",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The product on offer.",
+          "values": []
+        },
+        {
+          "key": "amount",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "The price of the product on offer.",
+          "values": []
+        },
+        {
+          "key": "currency",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The currency of the price.",
+          "values": []
+        }
+      ]
+    },
+    {
+      "name": "in_app_purchase_view_closed",
+      "meaning": "A screen that offers a purchase closes.",
+      "span": "purchase_view",
+      "role": "CLOSES",
+      "carries_outcome": false,
+      "fields": [
+        {
+          "key": "type",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The kind of screen.",
+          "values": ["shop", "no_ads"]
+        },
+        {
+          "key": "product",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The product on offer.",
+          "values": []
+        },
+        {
+          "key": "amount",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "The price of the product on offer.",
+          "values": []
+        },
+        {
+          "key": "currency",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The currency of the price.",
+          "values": []
+        },
+        {
+          "key": "reason",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "Why the screen closed.",
+          "values": []
+        }
+      ]
+    },
+    {
+      "name": "gambling_round_started",
+      "meaning": "A gambling round starts.",
+      "span": "round",
+      "role": "OPENS",
+      "carries_outcome": false,
+      "fields": [
+        {
+          "key": "game_type",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The game.",
+          "values": ["slots", "roulette", "blackjack"]
+        },
+        {
+          "key": "machine",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The machine or the table.",
+          "values": []
+        },
+        {
+          "key": "bet_amount",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "The bet.",
+          "values": []
+        },
+        {
+          "key": "bet_currency",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The currency of the bet.",
+          "values": []
+        },
+        {
+          "key": "auto_spin",
+          "type": "FLAG",
+          "expected": false,
+          "meaning": "True when the round was started by auto-spin.",
+          "values": []
+        }
+      ]
+    },
+    {
+      "name": "gambling_round_finished",
+      "meaning": "A gambling round ends.",
+      "span": "round",
+      "role": "CLOSES",
+      "carries_outcome": false,
+      "fields": [
+        {
+          "key": "game_type",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "The game.",
+          "values": ["slots", "roulette", "blackjack"]
+        },
+        {
+          "key": "result",
+          "type": "TEXT",
+          "expected": true,
+          "meaning": "How the round ended.",
+          "values": ["win", "loss", "draw", "jackpot"]
+        },
+        {
+          "key": "bet_amount",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "The bet.",
+          "values": []
+        },
+        {
+          "key": "bet_currency",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The currency of the bet.",
+          "values": []
+        },
+        {
+          "key": "return_amount",
+          "type": "NUMBER",
+          "expected": false,
+          "meaning": "What the round paid back.",
+          "values": []
+        },
+        {
+          "key": "return_currency",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The currency of the return.",
+          "values": []
+        },
+        {
+          "key": "machine",
+          "type": "TEXT",
+          "expected": false,
+          "meaning": "The machine or the table.",
+          "values": []
+        }
+      ]
+    }
+  ],
+  "spans": [
+    {
+      "name": "level",
+      "meaning": "One attempt at a level, from its start to its success or its failure.",
+      "sent_as": ["level"],
+      "sent_as_prefixes": []
+    },
+    {
+      "name": "ad",
+      "meaning": "One ad, from when it starts to show to when it stops.",
+      "sent_as": ["ad"],
+      "sent_as_prefixes": ["ad_"]
+    },
+    {
+      "name": "purchase_view",
+      "meaning": "One visit to a screen that offers a purchase, from when it opens to when it closes.",
+      "sent_as": ["purchase_view"],
+      "sent_as_prefixes": []
+    },
+    {
+      "name": "round",
+      "meaning": "One gambling round, from its start to its end.",
+      "sent_as": ["round"],
+      "sent_as_prefixes": []
+    },
+    {
+      "name": "rewarded_offer",
+      "meaning": "One offer of a rewarded ad, from when it is shown to when it is hidden, whether the player takes it or not.",
+      "sent_as": ["rewarded_offer"],
+      "sent_as_prefixes": []
+    },
+    {
+      "name": "backgrounded",
+      "meaning": "One time away from the game, from when it goes to the background to when it comes back.",
+      "sent_as": ["backgrounded"],
+      "sent_as_prefixes": []
+    },
+    {
+      "name": "settings",
+      "meaning": "One visit to the game's settings, from when they open to when they close.",
+      "sent_as": ["settings"],
+      "sent_as_prefixes": []
+    },
+    {
+      "name": "popup",
+      "meaning": "One popup, from when it shows to when it closes.",
+      "sent_as": ["popup"],
+      "sent_as_prefixes": []
+    },
+    {
+      "name": "tutorial_or_onboarding",
+      "meaning": "One step of a tutorial or of a player's first steps in the game, from its start to its end.",
+      "sent_as": ["tutorial_or_onboarding"],
+      "sent_as_prefixes": []
+    }
+  ],
+  "state_keys": [
+    {
+      "key": "level",
+      "default_attribute": "game_level",
+      "meaning": "The level the player is in."
+    },
+    {
+      "key": "screen",
+      "default_attribute": "view",
+      "meaning": "The screen the player is on."
+    },
+    {
+      "key": "mode",
+      "default_attribute": "mode",
+      "meaning": "The kind of play, from a short list of the game's own."
+    }
+  ],
+  "sdk_state_keys": [
+    {
+      "key": "nx10_screen_brightness",
+      "type": "NUMBER",
+      "meaning": "The brightness of the screen as the system reports it, from 0, the least, to 1, the most."
+    },
+    {
+      "key": "nx10_screen_locked",
+      "type": "FLAG",
+      "meaning": "True while the device is locked, and false while it is not."
+    }
+  ],
+  "outcome_converted": "Converted",
+  "outcome_unconverted": "UnConverted"
+}

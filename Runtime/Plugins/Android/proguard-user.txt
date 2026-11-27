@@ -1,0 +1,3 @@
+# Asparagus SDK — Preserve native Android sensor plugin class and static JNI methods
+-keep class com.asparagus.sdk.AsparagusSensorPlugin { *; }
+-keepclassmembers class com.asparagus.sdk.AsparagusSensorPlugin { *; }

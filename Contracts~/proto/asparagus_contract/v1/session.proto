@@ -1,0 +1,256 @@
+// The asparagus session start contract.
+//
+// The first call the asparagus SDK makes:
+//   POST /routes/asparagus/sessions/start, on the Control Plane
+//   content-type: application/json
+// Its body is a SessionStartRequest. The answer holds a
+// SessionStartResponse.
+//
+// The request body is JSON: Protobuf's own JSON form, with each field under
+// the name it has in this file. In that form a 64-bit number is written as
+// text, an enum is written as its name, and a field that holds nothing is
+// left out.
+//
+// The answer is JSON too. A 200 answer is an object with "status": "success"
+// and the SessionStartResponse under "data", in the same form. Any other
+// answer is an object with "status": "error" and a list under "errors".
+//
+// What the SDK does with the answer:
+//   200                          It starts the session.
+//   408, 429, 5xx or no answer   It tries again, with growing waits. It has
+//                                no settings yet, so the waits are its
+//                                built-in ones: its first retry wait,
+//                                twice as long after each try, up to its
+//                                longest.
+//   any other answer             The request is refused. It does not try
+//                                again in this run of the app.
+//
+// Until it has a 200 answer the SDK collects nothing.
+//
+// A reader ignores a field that it does not know, and an enum name that it
+// does not know.
+//
+// This file changes by adding only, as batch.proto does. A field is never
+// removed, renamed, renumbered, given a new type or given a new meaning.
+//
+// Every text is valid UTF-8.
+
+syntax = "proto3";
+
+package asparagus_contract.v1;
+
+import "asparagus_contract/v1/batch.proto";
+
+message SessionStartRequest {
+  // The key of the deployment, which is one game.
+  string api_key = 1;
+  // The id the device knows itself by: Unity's
+  // SystemInfo.deviceUniqueIdentifier. It is what nx10's earlier Unity SDKs
+  // sent as their device id, so a device keeps the id_source it already
+  // has. The server turns it into id_source. Never an email address, a
+  // phone number or a name.
+  string device_identifier = 2;
+  SdkVersion sdk_version = 3;
+  Platform platform = 4;
+  DeviceProperties device = 5;
+  // The game's own version and build, as the studio names them.
+  string app_version = 6;
+  string build_number = 7;
+  // The studio's properties for this session. They are stored once, with the
+  // session.
+  map<string, Value> session_properties = 8;
+  // A demo session collects nothing: the answer carries no batch endpoint.
+  bool demo = 9;
+}
+
+// What the phone is. Never its name, which can be a person's name.
+message DeviceProperties {
+  string maker = 1;
+  // The same text as device_model in the header of every batch.
+  string model = 2;
+  // The same text as os_version in the header of every batch.
+  string os_version = 3;
+  // The kind of device, as the system reports it, such as "Handheld".
+  string device_type = 4;
+  // The screen as the session starts.
+  uint32 screen_width_px = 5;
+  uint32 screen_height_px = 6;
+  float screen_density_dpi = 7;
+  bool has_gyroscope = 8;
+  // The phone's time zone, as a name such as "Europe/London".
+  string timezone = 9;
+  // The phone's language and region, such as "en-GB".
+  string locale = 10;
+}
+
+message SessionStartResponse {
+  // The four ids, under the names the rest of the stack uses. The SDK copies
+  // them into the header of every batch.
+  string id_org = 1;
+  string id_deployment = 2;
+  // The device.
+  string id_source = 3;
+  string id_session = 4;
+
+  // The session token. The SDK sends it with every upload, and with every
+  // access or forget request, in the header "authorization: Bearer <token>".
+  // It never looks inside the token.
+  string token = 5;
+  // When the token stops being accepted, in milliseconds since the start of
+  // 1970. The SDK judges it by its session clock, never by the phone's own
+  // clock. From then on the SDK starts a new session before it uploads.
+  sint64 token_expires_utc_ms = 6;
+  // The server's time as it answered, in milliseconds since the start of
+  // 1970. The SDK sets its session clock from it.
+  sint64 server_utc_ms = 7;
+
+  // Where batches go. Empty when the game is switched off, and in a demo
+  // session. The SDK then collects nothing.
+  //
+  // One upload for each batch:
+  //   POST to this address, as it is given
+  //   authorization: Bearer <token>
+  //   content-type: application/x-protobuf
+  //   content-encoding: gzip, when the batch is gzipped. Left out when not.
+  // The body is one Batch. The answer is an UploadResponse, as Protobuf
+  // bytes, with content-type: application/x-protobuf.
+  //
+  // What the SDK does with the answer to an upload:
+  //   2xx                          The queue holds the batch. It deletes
+  //                                its copy.
+  //   401                          The token is refused. It waits, starts a
+  //                                new session and sends the batch again.
+  //                                The wait is the first retry wait, and
+  //                                twice as long after each 401 that
+  //                                follows, up to the longest retry wait. A
+  //                                2xx puts it back to the first.
+  //   408, 429, 5xx or no answer   It keeps the batch and tries again.
+  //   any other answer             The batch is refused for good. It drops
+  //                                the batch and counts it in a diagnostic.
+  string batch_endpoint = 8;
+  // Where a request for a player's data goes, and where a request to forget
+  // a player goes.
+  string access_request_endpoint = 9;
+  string forget_request_endpoint = 10;
+
+  Settings settings = 11;
+
+  // Models the SDK may fetch.
+  repeated ModelReference models = 12;
+}
+
+enum MotionSource {
+  // Never sent. An SDK that gets it takes the setting as left out.
+  MOTION_SOURCE_UNSPECIFIED = 0;
+  // Native code on Android and iOS, with Unity as the silent fallback.
+  MOTION_SOURCE_NATIVE = 1;
+  // Unity only. It switches native capture off, for a game or a phone model.
+  MOTION_SOURCE_UNITY = 2;
+}
+
+// Every setting of a session. The server sends every one it knows. The SDK
+// holds a built-in value for each one it uses, and falls back on it only for
+// a setting that the answer leaves out. So every field says whether it is
+// there, and a zero that is sent means zero. Each comment says what its
+// zero does. Where it says "at least 1", the server never sends less, and
+// an SDK that gets less takes the setting as left out.
+message Settings {
+  // Names this set of values. Two sets with the same values have the same
+  // version. Every batch carries the version it was captured under.
+  string version = 1;
+
+  // Rates asked for, in samples a second. A zero switches that sensor off:
+  // it is not captured.
+  optional uint32 accelerometer_hz = 2;
+  optional uint32 gyroscope_hz = 3;
+  optional uint32 gravity_hz = 4;
+  // The most touch samples kept for each finger each second. Zero keeps
+  // every event.
+  optional uint32 touch_hz = 5;
+
+  // Where motion is captured.
+  optional MotionSource motion_source = 6;
+  // How long the native buffer keeps filling while Unity is paused. With
+  // zero, nothing is kept while Unity is paused.
+  optional uint32 native_buffer_s = 7;
+  // No sample for this long after starting: fall back to Unity. Zero sets
+  // no limit, so there is no fallback for this reason.
+  optional uint32 native_start_limit_ms = 8;
+  // No sample for this long while the app is in front: fall back to Unity.
+  // Zero sets no limit, so there is no fallback for this reason.
+  optional uint32 native_stall_limit_ms = 9;
+
+  // Hold records. A tolerance counts steps of the scale that the batch
+  // states. A sample within that many steps of the first one counts as
+  // unchanged. Zero folds only exact repeats. For touch, each of position,
+  // contact size and pressure is held to it on its own scale.
+  optional uint32 accelerometer_hold_tolerance = 10;
+  optional uint32 gyroscope_hold_tolerance = 11;
+  optional uint32 gravity_hold_tolerance = 12;
+  optional uint32 touch_hold_tolerance = 13;
+  // Samples in a row before a hold starts. With zero there are no hold
+  // records: every sample is sent in full.
+  optional uint32 hold_run_length = 14;
+
+  // A silence between two samples is a gap when it is longer than both of
+  // these: this many milliseconds, and this many sample periods at the rate
+  // asked for. A zero switches that one off, and the other decides. With
+  // both at zero, no gap is recorded from the timing of samples.
+  optional uint32 gap_threshold_ms = 15;
+  optional uint32 gap_threshold_periods = 16;
+
+  // How long one batch covers. At least 1.
+  optional uint32 batch_length_s = 17;
+  // Whether batches are gzipped.
+  optional bool compress = 18;
+
+  // The queue on the phone. Past either limit the oldest batches are
+  // dropped. With either at zero nothing is queued: a batch that cannot be
+  // sent at once is dropped, and counted.
+  optional uint32 queue_max_bytes = 19;
+  optional uint32 queue_max_age_s = 20;
+  // The first wait between upload attempts. It doubles up to the longest.
+  // Each is at least 1, and a first wait above the longest counts as the
+  // longest. The SDK shortens every wait between tries by a random part
+  // of up to half, so that phones do not all try again together. That
+  // holds for these waits, for the waits after a refused token, and for
+  // the waits before a session start is tried again.
+  optional uint32 retry_first_wait_ms = 21;
+  optional uint32 retry_longest_wait_ms = 22;
+
+  // Stop recording touch positions while an on-screen keyboard is up.
+  optional bool pause_touch_on_keyboard = 23;
+
+  // The server's own setting: how long the session token lasts, in seconds.
+  // At least 1. The server issues the token with it. The answer says when
+  // the token runs out, so the SDK needs no value of its own for it.
+  optional uint32 token_life_s = 24;
+
+  // How long a player may be away, in seconds, before the game starts a new
+  // session. After more than this many seconds away from the game, the SDK
+  // starts a new session and does not carry the old one on. The backend's
+  // job closes a session that has been silent for as long. At least 1, and
+  // 86400 at the most: a day.
+  optional uint32 new_session_after_s = 25;
+
+  // The magnetometer: the rate asked for, in samples a second, and its hold
+  // tolerance, in steps of the scale that the batch states, as for the
+  // sensors above. A rate of zero switches the magnetometer off: it is not
+  // captured. A tolerance of zero folds only exact repeats.
+  optional uint32 magnetometer_hz = 26;
+  optional uint32 magnetometer_hold_tolerance = 27;
+}
+
+message ModelReference {
+  // What the model is for, such as "ad_propensity".
+  string purpose = 1;
+  // The name and the version name the model. Together they are the key to
+  // keep a fetched copy under.
+  string name = 2;
+  string version = 3;
+  // A link that works for a short time, of minutes. The SDK fetches the
+  // model as the session starts.
+  string download_url = 4;
+  // The names of the values to pass to the model.
+  repeated string arguments = 5;
+}
